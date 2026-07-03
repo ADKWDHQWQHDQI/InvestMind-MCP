@@ -5,7 +5,6 @@ import sys
 import os
 
 def test_live_mcp_stdio():
-    # Make sure we use the correct slash depending on OS
     python_exe = os.path.join(".venv", "Scripts", "python.exe")
     if not os.path.exists(python_exe):
         python_exe = "python"
@@ -22,7 +21,6 @@ def test_live_mcp_stdio():
         bufsize=1
     )
     
-    # Let process initialize
     time.sleep(1.0)
     
     try:
@@ -43,8 +41,17 @@ def test_live_mcp_stdio():
         process.stdin.flush()
         
         # Read response
-        init_response = process.stdout.readline()
-        print("[Server -> Client] Received:", init_response.strip())
+        init_response_raw = process.stdout.readline()
+        print("[Server -> Client] Received:", init_response_raw.strip())
+        
+        # Assertions on Initialization Response
+        init_data = json.loads(init_response_raw)
+        assert init_data["jsonrpc"] == "2.0"
+        assert init_data["id"] == 1
+        assert "result" in init_data
+        assert "protocolVersion" in init_data["result"]
+        assert init_data["result"]["serverInfo"]["name"] == "InvestMind"
+        print("OK: 'initialize' response assertions passed!")
         
         # 2. Send Hello Tool Call Request
         tool_request = {
@@ -62,20 +69,32 @@ def test_live_mcp_stdio():
         process.stdin.flush()
         
         # Read response
-        tool_response = process.stdout.readline()
-        print("[Server -> Client] Received:", tool_response.strip())
+        tool_response_raw = process.stdout.readline()
+        print("[Server -> Client] Received:", tool_response_raw.strip())
+        
+        # Assertions on Tool Call Response
+        tool_data = json.loads(tool_response_raw)
+        assert tool_data["jsonrpc"] == "2.0"
+        assert tool_data["id"] == 2
+        assert "result" in tool_data
+        assert tool_data["result"]["isError"] is False
+        assert tool_data["result"]["content"][0]["text"] == "Hello Sandeep! MCP is working."
+        print("OK: 'hello_mcp' tool execution assertions passed!")
         
         process.terminate()
         process.wait()
     except Exception as e:
-        print(f"\nError occurred during interaction: {e}")
+        print(f"\nERROR: Error occurred during validation: {e}")
         process.terminate()
         stdout, stderr = process.communicate()
         if stderr:
              print("\n[Server Stderr LOG]:\n", stderr.strip())
         if stdout:
              print("\n[Server Stdout LOG]:\n", stdout.strip())
-    print("\nMCP stdio validation complete!")
+        sys.exit(1)
+        
+    print("\nSUCCESS: MCP stdio validation complete! All integration assertions passed.")
+
 
 if __name__ == "__main__":
     test_live_mcp_stdio()

@@ -5,15 +5,24 @@ import logging
 import uvicorn
 import os
 import sys
+from typing import Optional
 
 # Ensure project root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, status, File, UploadFile, Form
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
 
 from src.config import settings
+from src.security.auth import (
+    current_user_id,
+    current_decryption_key,
+    create_access_token,
+    authenticate_request
+)
 from src.security.encryption import EncryptionManager
 from src.database.operations import save_portfolio, get_portfolio, save_watchlist, get_watchlist
 from src.parser.cas_parser import parse_cas_pdf
@@ -28,157 +37,204 @@ logger = logging.getLogger("investmind.main")
 # Initialize FastMCP Server
 mcp = FastMCP("InvestMind")
 
+# FastAPI Models
+class TokenRequest(BaseModel):
+    user_id: str
+    passphrase: str
+
+# Setup FastAPI App (for SSE/remote connections and user file uploads)
+app = FastAPI(title="InvestMind MCP Server")
+sse = SseServerTransport("/messages")
+
+@app.post("/api/auth/token")
+async def generate_token(req: TokenRequest):
+    """
+    Exchanges user credentials and their master passphrase for an authenticated JWT session token.
+    Derives the AES-256-GCM key using the user's permanent salt (or creates a new one).
+    """
+    try:
+        user_id = req.user_id.strip()
+        passphrase = req.passphrase
+        
+        if not user_id or not passphrase:
+            raise HTTPException(status_code=400, detail="Missing user_id or passphrase.")
+            
+        # Check if user has an existing salt in portfolios collection
+        doc = await get_portfolio(user_id)
+        if doc and "salt" in doc:
+            salt_bytes = bytes.fromhex(doc["salt"])
+        else:
+            # Generate a new permanent salt for this user
+            salt_bytes = os.urandom(16)
+            # Create a placeholder document to lock in the salt
+            await save_portfolio(user_id, "", salt_bytes.hex())
+            
+        # Derive session key
+        key, _ = EncryptionManager.derive_key(passphrase, salt_bytes)
+        
+        # Generate JWT carrying user context and derived key
+        token = create_access_token(user_id, key.hex())
+        return {"token": token}
+    except Exception as e:
+        logger.error(f"Error generating token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/portfolio/upload")
+async def upload_cas_statement(
+    file: UploadFile = File(...),
+    password: str = Form(...),
+    user_id: str = Depends(authenticate_request)
+):
+    """
+    Secure file upload endpoint. Accepts the CAS statement PDF and decryption password.
+    Processes the file entirely in RAM, encrypts the holdings using the authenticated 
+    session key, and stores the encrypted blob in MongoDB.
+    """
+    try:
+        logger.info(f"Processing CAS upload via API for user: {user_id}")
+        
+        # 1. Read file bytes in memory
+        pdf_bytes = await file.read()
+        
+        # 2. Parse PDF in memory
+        raw_holdings = parse_cas_pdf(pdf_bytes, password)
+        if not raw_holdings:
+            raise HTTPException(status_code=400, detail="No holdings found or failed to parse PDF.")
+            
+        # 3. Normalize holdings (No third-party calls are made here to protect user privacy)
+        normalized = normalize_holdings(raw_holdings)
+        
+        # 4. Encrypt holdings using the authenticated session key
+        key = current_decryption_key.get()
+        if not key:
+            raise HTTPException(status_code=401, detail="Session key is missing. Please re-authenticate.")
+            
+        # Retrieve existing salt to retain consistency
+        doc = await get_portfolio(user_id)
+        salt_hex = doc["salt"] if doc else os.urandom(16).hex()
+        
+        holdings_json = json.dumps(normalized)
+        encrypted_data = EncryptionManager.encrypt(holdings_json, key)
+        
+        # 5. Save encrypted data to database
+        success = await save_portfolio(user_id, encrypted_data, salt_hex)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save encrypted holdings to database.")
+            
+        return {
+            "success": True,
+            "message": f"Successfully parsed and encrypted {len(normalized)} holdings."
+        }
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error in upload_cas_statement API: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- MCP TOOLS ---
+# All user_id arguments are removed. They are fetched securely from the JWT session context.
+
 @mcp.tool()
 def hello_mcp() -> str:
     """A hello tool to verify connectivity."""
     return "Hello Sandeep! MCP is working."
 
 @mcp.tool()
-async def upload_cas(
-    user_id: str,
-    cas_base64: str,
-    password: str,
-    encryption_passphrase: str = None
-) -> dict:
-    """
-    Decrypts, parses, and normalizes a password-protected CAS statement PDF (passed as base64).
-    Encrypts the normalized holdings list using AES-256-GCM and stores it in MongoDB.
-    
-    Parameters:
-      - user_id: A unique identifier for the user.
-      - cas_base64: The base64-encoded bytes of the CAS PDF statement.
-      - password: The password to decrypt the CAS PDF (usually user's PAN card number in uppercase).
-      - encryption_passphrase: Optional passphrase to secure the holdings. If provided, the data 
-                               can only be decrypted when this passphrase is provided (Zero-Knowledge style).
-    """
-    try:
-        logger.info(f"Received CAS upload request for user: {user_id}")
-        
-        # 1. Decode PDF bytes in memory
-        try:
-            pdf_bytes = base64.b64decode(cas_base64)
-        except Exception as e:
-            return {"success": False, "error": f"Invalid base64 encoding: {str(e)}"}
-            
-        # 2. Parse PDF in memory
-        raw_holdings = parse_cas_pdf(pdf_bytes, password)
-        if not raw_holdings:
-            return {"success": False, "error": "No holdings found or failed to parse PDF."}
-            
-        # 3. Normalize holdings
-        normalized = normalize_holdings(raw_holdings)
-        
-        # 4. Resolve symbols dynamically using Yahoo Finance search
-        for holding in normalized:
-            symbol = await resolve_ticker(holding["isin"])
-            holding["symbol"] = symbol
-        
-        # 5. Encrypt holdings
-        passphrase = encryption_passphrase or settings.SERVER_ENCRYPTION_PASSPHRASE
-        key, salt = EncryptionManager.derive_key(passphrase)
-        
-        holdings_json = json.dumps(normalized)
-        encrypted_data = EncryptionManager.encrypt(holdings_json, key)
-        
-        # 6. Save to MongoDB
-        success = await save_portfolio(user_id, encrypted_data, salt.hex())
-        if not success:
-            return {"success": False, "error": "Failed to save portfolio to database."}
-            
-        return {
-            "success": True,
-            "message": f"Successfully parsed and stored {len(normalized)} holdings.",
-            "holdings_count": len(normalized)
-        }
-    except Exception as e:
-        logger.error(f"Error in upload_cas: {e}")
-        return {"success": False, "error": str(e)}
-
-@mcp.tool()
-async def get_holdings(user_id: str, encryption_passphrase: str = None) -> list[dict]:
+async def get_holdings() -> list[dict]:
     """
     Retrieves the user's holdings from the secure MongoDB store and decrypts them in memory.
-    
-    Parameters:
-      - user_id: Unique identifier for the user.
-      - encryption_passphrase: Passphrase if custom encryption was used during upload.
     """
-    try:
-        doc = await get_portfolio(user_id)
-        if not doc:
-            return []
-            
-        encrypted_holdings = doc["encrypted_holdings"]
-        salt_hex = doc["salt"]
+    user_id = current_user_id.get()
+    key = current_decryption_key.get()
+    if not user_id or not key:
+        raise ValueError("Unauthorized or session key missing.")
         
-        passphrase = encryption_passphrase or settings.SERVER_ENCRYPTION_PASSPHRASE
-        key, _ = EncryptionManager.derive_key(passphrase, bytes.fromhex(salt_hex))
+    doc = await get_portfolio(user_id)
+    if not doc or not doc.get("encrypted_holdings"):
+        return []
         
-        decrypted_json = EncryptionManager.decrypt(encrypted_holdings, key)
-        return json.loads(decrypted_json)
-    except Exception as e:
-        logger.error(f"Error in get_holdings: {e}")
-        raise ValueError(f"Could not retrieve holdings: {str(e)}")
+    encrypted_holdings = doc["encrypted_holdings"]
+    decrypted_json = EncryptionManager.decrypt(encrypted_holdings, key)
+    return json.loads(decrypted_json)
 
 @mcp.tool()
-async def get_portfolio_summary(user_id: str, encryption_passphrase: str = None) -> dict:
+async def get_portfolio_summary() -> dict:
     """
     Retrieves the user's decrypted holdings, fetches live market prices, and calculates 
-    comprehensive portfolio metrics including total valuation, sector allocations, 
-    and concentration risks. All metrics and company data are queried dynamically.
+    comprehensive portfolio metrics including valuations, sector allocations, 
+    and concentration risks.
     """
-    try:
-        holdings = await get_holdings(user_id, encryption_passphrase)
-        if not holdings:
-            return {"message": "No portfolio found. Please upload your CAS statement first."}
-            
-        symbols = [h["symbol"] for h in holdings]
-        live_prices = await get_live_prices(symbols)
+    user_id = current_user_id.get()
+    if not user_id:
+        raise ValueError("Unauthorized or session key missing.")
         
-        # Fetch company metadata dynamically (sector, names, dividend yields)
-        ticker_infos = {}
-        for s in symbols:
-            ticker_infos[s] = await get_ticker_info(s)
-            
-        analysis = analyze_portfolio(holdings, live_prices, ticker_infos)
-        return analysis
-    except Exception as e:
-        logger.error(f"Error in get_portfolio_summary: {e}")
-        return {"error": str(e)}
+    holdings = await get_holdings()
+    if not holdings:
+        return {"message": "No portfolio found. Please upload your CAS statement first."}
+        
+    # Asynchronously resolve ISINs to Yahoo tickers first (done dynamically on-demand)
+    symbols = []
+    for h in holdings:
+        # Resolve tickers dynamically
+        symbol = await resolve_ticker(h["isin"])
+        h["symbol"] = symbol
+        symbols.append(symbol)
+        
+    live_prices = await get_live_prices(symbols)
+    
+    # Gather profile information dynamically
+    ticker_infos = {}
+    for s in symbols:
+        ticker_infos[s] = await get_ticker_info(s)
+        
+    analysis = analyze_portfolio(holdings, live_prices, ticker_infos)
+    return analysis
 
 @mcp.tool()
-async def get_portfolio_news(user_id: str, encryption_passphrase: str = None) -> list[dict]:
+async def get_portfolio_news() -> list[dict]:
     """
     Fetches the latest relevant corporate actions, dividends, and news matching the symbols 
     in the user's portfolio dynamically.
     """
-    try:
-        holdings = await get_holdings(user_id, encryption_passphrase)
-        if not holdings:
-            return []
-            
-        symbols = [h["symbol"] for h in holdings]
-        news = await get_stock_news(symbols)
-        return news
-    except Exception as e:
-        logger.error(f"Error in get_portfolio_news: {e}")
-        return [{"error": str(e)}]
+    user_id = current_user_id.get()
+    if not user_id:
+        raise ValueError("Unauthorized or session key missing.")
+        
+    holdings = await get_holdings()
+    if not holdings:
+        return []
+        
+    symbols = []
+    for h in holdings:
+        symbol = await resolve_ticker(h["isin"])
+        symbols.append(symbol)
+        
+    news = await get_stock_news(symbols)
+    return news
 
 @mcp.tool()
-async def update_watchlist(user_id: str, symbols: list[str]) -> dict:
+async def update_watchlist(symbols: list[str]) -> dict:
     """
     Updates the list of stock symbols monitored in the user's watchlist.
     """
+    user_id = current_user_id.get()
+    if not user_id:
+        raise ValueError("Unauthorized or session key missing.")
+        
     success = await save_watchlist(user_id, symbols)
     if success:
         return {"success": True, "message": "Watchlist updated successfully."}
     return {"success": False, "message": "Failed to update watchlist."}
 
 @mcp.tool()
-async def get_watchlist_summary(user_id: str) -> dict:
+async def get_watchlist_summary() -> dict:
     """
     Retrieves the user's watchlist stock symbols along with their live prices.
     """
+    user_id = current_user_id.get()
+    if not user_id:
+        raise ValueError("Unauthorized or session key missing.")
+        
     symbols = await get_watchlist(user_id)
     if not symbols:
         return {"message": "Your watchlist is empty."}
@@ -190,12 +246,13 @@ async def get_watchlist_summary(user_id: str) -> dict:
         "watchlist": watchlist_items
     }
 
-# Setup FastAPI App (for SSE/remote connections)
-app = FastAPI(title="InvestMind MCP Server")
-sse = SseServerTransport("/messages")
+# --- HTTP ENDPOINTS WITH ENFORCED AUTHENTICATION ---
 
 @app.get("/sse")
-async def handle_sse(request: Request):
+async def handle_sse(request: Request, user_id: str = Depends(authenticate_request)):
+    """
+    HTTP/SSE endpoint. Enforces Bearer token validation before starting the stream.
+    """
     async with sse.connect_sse(
         request.scope, request.receive, request._send
     ) as (read_stream, write_stream):
@@ -206,7 +263,10 @@ async def handle_sse(request: Request):
         )
 
 @app.post("/messages")
-async def handle_messages(request: Request):
+async def handle_messages(request: Request, user_id: str = Depends(authenticate_request)):
+    """
+    POST Messages handler. Validates authentication token on every JSON-RPC interaction.
+    """
     await sse.handle_post_message(request.scope, request.receive, request._send)
 
 def main():

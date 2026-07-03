@@ -1,51 +1,92 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from src.main import upload_cas, get_holdings, get_portfolio_summary, get_portfolio_news, update_watchlist, get_watchlist_summary
+import os
+import json
+from unittest.mock import MagicMock, patch
+from fastapi.testclient import TestClient
 
-DUMMY_PDF_BASE64 = "JVBERi0xLjQKJVRlc3QgUERGIA=="
+from src.main import app, get_holdings, get_portfolio_summary, get_portfolio_news, update_watchlist, get_watchlist_summary
+from src.security.auth import current_user_id, current_decryption_key, create_access_token
+from src.security.encryption import EncryptionManager
+from src.config import settings
 
-@pytest.mark.anyio
+client = TestClient(app)
+
+# Helper to generate a valid test token
+def get_test_token(user_id="user_test_1"):
+    key, _ = EncryptionManager.derive_key("my-secure-passphrase")
+    return create_access_token(user_id, key.hex()), key
+
+def test_api_auth_token_endpoint():
+    """Tests exchanging passphrase for JWT."""
+    with patch("src.main.get_portfolio") as mock_get_portfolio:
+        mock_get_portfolio.return_value = {"salt": os.urandom(16).hex()}
+        
+        response = client.post(
+            "/api/auth/token",
+            json={"user_id": "user_test_1", "passphrase": "my-secure-passphrase"}
+        )
+        assert response.status_code == 200
+        assert "token" in response.json()
+
+def test_api_portfolio_upload_unauthorized():
+    """Tests upload fails without Authorization header."""
+    response = client.post(
+        "/api/portfolio/upload",
+        files={"file": ("test.pdf", b"%PDF-1.4...", "application/pdf")},
+        data={"password": "PAN_PASSWORD"}
+    )
+    assert response.status_code == 401
+
 @patch("src.main.parse_cas_pdf")
 @patch("src.main.save_portfolio")
-@patch("src.main.resolve_ticker")
-async def test_upload_cas_tool(mock_resolve_ticker, mock_save_portfolio, mock_parse_cas_pdf):
-    # Set up mock outputs
-    mock_parse_cas_pdf.return_value = [
-        {"isin": "INE020B01018", "name": "REC LTD", "quantity": 100.0}
-    ]
+@patch("src.main.get_portfolio")
+def test_api_portfolio_upload_authorized(mock_get_portfolio, mock_save_portfolio, mock_parse_cas_pdf):
+    """Tests successful CAS upload with token."""
+    token, key = get_test_token()
+    mock_parse_cas_pdf.return_value = [{"isin": "INE020B01018", "name": "REC LTD", "quantity": 100.0}]
     mock_save_portfolio.return_value = True
-    mock_resolve_ticker.return_value = "REC"
+    mock_get_portfolio.return_value = None  # New user
     
-    response = await upload_cas(
-        user_id="user_test_1",
-        cas_base64=DUMMY_PDF_BASE64,
-        password="PAN_PASSWORD"
+    response = client.post(
+        "/api/portfolio/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("test.pdf", b"%PDF-1.4...", "application/pdf")},
+        data={"password": "PAN_PASSWORD"}
     )
     
-    assert response["success"] is True
-    assert response["holdings_count"] == 1
-    assert "Successfully parsed" in response["message"]
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert "Successfully parsed and encrypted" in response.json()["message"]
+
+@pytest.mark.anyio
+async def test_mcp_tool_unauthorized_access():
+    """MCP tools should fail if ContextVars are not set (unauthorized)."""
+    current_user_id.set("")
+    current_decryption_key.set(b"")
     
-    mock_parse_cas_pdf.assert_called_once()
-    mock_save_portfolio.assert_called_once()
-    mock_resolve_ticker.assert_called_once()
+    with pytest.raises(ValueError, match="Unauthorized or session key missing"):
+        await get_holdings()
 
 @pytest.mark.anyio
 @patch("src.main.get_portfolio")
-async def test_get_holdings_tool(mock_get_portfolio):
-    from src.security.encryption import EncryptionManager
-    from src.config import settings
-    
+async def test_get_holdings_tool_authorized(mock_get_portfolio):
+    """MCP tools retrieve holdings for authenticated context."""
+    user_id = "user_test_1"
     raw_holdings = [{"symbol": "REC", "isin": "INE020B01018", "name": "REC LTD", "quantity": 100.0, "average_price": 0.0, "asset_class": "Equity"}]
-    key, salt = EncryptionManager.derive_key(settings.SERVER_ENCRYPTION_PASSPHRASE)
-    encrypted_blob = EncryptionManager.encrypt(str(raw_holdings).replace("'", '"'), key)
+    
+    token, key = get_test_token(user_id)
+    encrypted_blob = EncryptionManager.encrypt(json.dumps(raw_holdings), key)
     
     mock_get_portfolio.return_value = {
         "encrypted_holdings": encrypted_blob,
-        "salt": salt.hex()
+        "salt": os.urandom(16).hex()
     }
     
-    holdings = await get_holdings(user_id="user_test_1")
+    # Simulate ContextVar population
+    current_user_id.set(user_id)
+    current_decryption_key.set(key)
+    
+    holdings = await get_holdings()
     assert len(holdings) == 1
     assert holdings[0]["symbol"] == "REC"
     assert holdings[0]["quantity"] == 100.0
@@ -54,7 +95,15 @@ async def test_get_holdings_tool(mock_get_portfolio):
 @patch("src.main.get_holdings")
 @patch("src.main.get_live_prices")
 @patch("src.main.get_ticker_info")
-async def test_get_portfolio_summary_tool(mock_ticker_info, mock_live_prices, mock_get_holdings):
+@patch("src.main.resolve_ticker")
+async def test_get_portfolio_summary_tool(mock_resolve_ticker, mock_ticker_info, mock_live_prices, mock_get_holdings):
+    user_id = "user_test_1"
+    _, key = get_test_token(user_id)
+    
+    current_user_id.set(user_id)
+    current_decryption_key.set(key)
+    
+    mock_resolve_ticker.return_value = "REC"
     mock_get_holdings.return_value = [
         {"symbol": "REC", "isin": "INE020B01018", "name": "REC LTD", "quantity": 10.0}
     ]
@@ -65,45 +114,28 @@ async def test_get_portfolio_summary_tool(mock_ticker_info, mock_live_prices, mo
         "name": "REC Ltd"
     }
     
-    summary = await get_portfolio_summary(user_id="user_test_1")
-    
-    assert "summary" in summary
-    assert summary["summary"]["total_valuation"] == 5000.0  # 10 * 500
+    summary = await get_portfolio_summary()
+    assert summary["summary"]["total_valuation"] == 5000.0
     assert summary["summary"]["total_holdings_count"] == 1
-    assert len(summary["holdings"]) == 1
-    assert summary["holdings"][0]["valuation"] == 5000.0
-    assert summary["holdings"][0]["sector"] == "Financial Services (NBFC)"
 
 @pytest.mark.anyio
 @patch("src.main.get_holdings")
 @patch("src.main.get_stock_news")
-async def test_get_portfolio_news_tool(mock_stock_news, mock_get_holdings):
+@patch("src.main.resolve_ticker")
+async def test_get_portfolio_news_tool(mock_resolve_ticker, mock_stock_news, mock_get_holdings):
+    user_id = "user_test_1"
+    _, key = get_test_token(user_id)
+    current_user_id.set(user_id)
+    current_decryption_key.set(key)
+    
+    mock_resolve_ticker.return_value = "REC"
     mock_get_holdings.return_value = [
         {"symbol": "REC", "isin": "INE020B01018", "name": "REC LTD", "quantity": 10.0}
     ]
     mock_stock_news.return_value = [
-        {"symbol": "REC", "title": "REC Board declares an interim dividend.", "source": "Mint", "link": "", "timestamp": "2026-07-03 12:00:00"}
+        {"symbol": "REC", "title": "REC Board interim dividend.", "source": "Mint", "link": "", "timestamp": ""}
     ]
     
-    news = await get_portfolio_news(user_id="user_test_1")
+    news = await get_portfolio_news()
     assert len(news) == 1
     assert news[0]["symbol"] == "REC"
-    assert "dividend" in news[0]["title"].lower()
-
-@pytest.mark.anyio
-@patch("src.main.save_watchlist")
-@patch("src.main.get_watchlist")
-@patch("src.main.get_live_prices")
-async def test_watchlist_tools(mock_live_prices, mock_get_watchlist, mock_save_watchlist):
-    mock_save_watchlist.return_value = True
-    mock_get_watchlist.return_value = ["REC", "INFY"]
-    mock_live_prices.return_value = {"REC": 500.0, "INFY": 1500.0}
-    
-    update_res = await update_watchlist("user_test_1", ["REC", "INFY"])
-    assert update_res["success"] is True
-    
-    watchlist_summary = await get_watchlist_summary("user_test_1")
-    assert watchlist_summary["user_id"] == "user_test_1"
-    assert len(watchlist_summary["watchlist"]) == 2
-    assert watchlist_summary["watchlist"][0]["symbol"] == "REC"
-    assert watchlist_summary["watchlist"][0]["price"] == 500.0

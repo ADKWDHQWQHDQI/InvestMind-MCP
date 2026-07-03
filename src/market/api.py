@@ -32,9 +32,12 @@ async def resolve_ticker(query: str) -> str:
         logger.error(f"Error resolving ticker for '{query}': {e}")
     return query  # Fallback to the query string itself
 
-async def get_live_price(ticker: str) -> float:
+from typing import Optional
+
+async def get_live_price(ticker: str) -> Optional[float]:
     """
     Fetches the current live stock price from Yahoo Finance.
+    Returns None if fetching fails.
     """
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d"
@@ -51,7 +54,7 @@ async def get_live_price(ticker: str) -> float:
                     return float(price)
     except Exception as e:
         logger.error(f"Error fetching live price for {ticker}: {e}")
-    return 150.0  # Fallback baseline price
+    return None
 
 async def get_ticker_info(ticker: str) -> dict:
     """
@@ -126,13 +129,5 @@ async def get_stock_news(queries: list[str]) -> list[dict]:
                         })
             except Exception as e:
                 logger.error(f"Error fetching news for {ticker}: {e}")
-                
-    if not news_items:
-        news_items.append({
-            "symbol": "MARKET",
-            "title": "Nifty and Sensex trade steady; sector dynamics drive index movement.",
-            "source": "Yahoo Finance",
-            "link": "",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
     return news_items
+

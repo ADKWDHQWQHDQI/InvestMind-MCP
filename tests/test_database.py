@@ -15,8 +15,8 @@ def test_portfolio_document_validation():
 def test_watchlist_document_validation():
     doc = WatchlistDocument(
         user_id="user_123",
-        symbols=["INFY", "TCS"]
+        encrypted_symbols="encrypted_watchlist_data=="
     )
     assert doc.user_id == "user_123"
-    assert doc.symbols == ["INFY", "TCS"]
+    assert doc.encrypted_symbols == "encrypted_watchlist_data=="
     assert isinstance(doc.last_updated, datetime)

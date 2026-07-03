@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List, Optional
 from pydantic import BaseModel, Field
 
 class PortfolioDocument(BaseModel):
@@ -13,7 +12,7 @@ class PortfolioDocument(BaseModel):
 
 class WatchlistDocument(BaseModel):
     user_id: str = Field(..., description="Unique identifier for the user")
-    symbols: List[str] = Field(default_factory=list, description="List of stock symbols in the watchlist")
+    encrypted_symbols: str = Field(..., description="Base64 AES-256-GCM encrypted JSON string of symbols")
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
