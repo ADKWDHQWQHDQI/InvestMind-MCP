@@ -39,11 +39,13 @@ import src.tools.utility
 import src.tools.ai_chat
 import src.tools.agents
 
+from src.database.connection import get_db
 from src.security.auth import (
     current_user_id,
     current_decryption_key,
     create_access_token,
-    authenticate_request
+    authenticate_request,
+    register_session
 )
 from src.security.encryption import EncryptionManager
 from src.database.operations import save_portfolio, get_portfolio
@@ -54,44 +56,80 @@ from src.parser.normalizer import normalize_holdings
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("investmind.main")
 
+# Enforce secure secrets on startup
+DEFAULT_SECRET_KEY = "investmind-super-secure-jwt-signing-secret-change-me"
+if settings.JWT_SECRET_KEY == DEFAULT_SECRET_KEY:
+    if os.environ.get("ENV") == "production":
+        logger.critical("JWT_SECRET_KEY must be configured in environment in production mode!")
+        sys.exit("FATAL: JWT_SECRET_KEY is the default signing key in production.")
+    else:
+        import secrets
+        settings.JWT_SECRET_KEY = secrets.token_urlsafe(32)
+        logger.warning("JWT_SECRET_KEY was not set. Generated a random one-time key for this process.")
+
 # FastAPI Models
 class TokenRequest(BaseModel):
     user_id: str
+    password: str
     passphrase: str
 
 # Setup FastAPI App (for SSE/remote connections and user file uploads)
 app = FastAPI(title="InvestMind MCP Server")
 sse = SseServerTransport("/messages")
 
+def hash_password(password: str, salt: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(salt + password.encode()).hexdigest()
+
 @app.post("/api/auth/token")
 async def generate_token(req: TokenRequest):
     """
     Exchanges user credentials and their master passphrase for an authenticated JWT session token.
     Derives the AES-256-GCM key using the user's permanent salt (or creates a new one).
+    Verifies user's identity against the users collection.
     """
     try:
         user_id = req.user_id.strip()
+        password = req.password
         passphrase = req.passphrase
         
-        if not user_id or not passphrase:
-            raise HTTPException(status_code=400, detail="Missing user_id or passphrase.")
+        if not user_id or not password or not passphrase:
+            raise HTTPException(status_code=400, detail="Missing user_id, password, or passphrase.")
             
-        # Check if user has an existing salt in portfolios collection
+        # 1. Fetch user credentials from database
+        db = await get_db()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection unavailable.")
+            
+        user = await db["users"].find_one({"user_id": user_id})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+            
+        # 2. Verify password hash
+        salt_bytes = bytes.fromhex(user["salt"])
+        expected_hash = hash_password(password, salt_bytes)
+        if user["password_hash"] != expected_hash:
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+            
+        # 3. Retrieve or create portfolio salt
         doc = await get_portfolio(user_id)
         if doc and "salt" in doc:
-            salt_bytes = bytes.fromhex(doc["salt"])
+            p_salt_bytes = bytes.fromhex(doc["salt"])
         else:
-            # Generate a new permanent salt for this user
-            salt_bytes = os.urandom(16)
-            # Create a placeholder document to lock in the salt
-            await save_portfolio(user_id, "", salt_bytes.hex())
+            p_salt_bytes = os.urandom(16)
+            await save_portfolio(user_id, "", p_salt_bytes.hex())
             
-        # Derive session key
-        key, _ = EncryptionManager.derive_key(passphrase, salt_bytes)
+        # 4. Derive decryption key from passphrase
+        key, _ = EncryptionManager.derive_key(passphrase, p_salt_bytes)
         
-        # Generate JWT carrying user context and derived key
-        token = create_access_token(user_id, key.hex())
+        # 5. Register session in-memory, mapping session_id -> key
+        session_id = register_session(user_id, key)
+        
+        # 6. Generate secure JWT carrying sub and sid (no raw key!)
+        token = create_access_token(user_id, session_id)
         return {"token": token}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating token: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -169,6 +207,40 @@ async def handle_messages(request: Request, user_id: str = Depends(authenticate_
     """
     await sse.handle_post_message(request.scope, request.receive, request._send)
 
+from src.security.auth import set_stdio_session
+import asyncio
+
+async def validate_stdio_env():
+    uid = os.environ.get("INVESTMIND_USER_ID")
+    pwd = os.environ.get("INVESTMIND_PASSWORD")
+    passphrase = os.environ.get("INVESTMIND_PASSPHRASE")
+    
+    if uid and pwd and passphrase:
+        logger.info(f"Attempting automatic stdio authentication for user: {uid}")
+        db = await get_db()
+        if db is None:
+            logger.error("Database connection unavailable for stdio authentication.")
+            sys.exit(1)
+            
+        user = await db["users"].find_one({"user_id": uid})
+        if not user:
+            logger.error(f"Stdio authentication failed: User {uid} not found.")
+            sys.exit(1)
+            
+        salt_bytes = bytes.fromhex(user["salt"])
+        expected_hash = hash_password(pwd, salt_bytes)
+        if user["password_hash"] != expected_hash:
+            logger.error("Stdio authentication failed: Invalid password.")
+            sys.exit(1)
+            
+        # Derive decryption key
+        portfolio_doc = await db["portfolios"].find_one({"user_id": uid})
+        p_salt = bytes.fromhex(portfolio_doc["salt"]) if (portfolio_doc and "salt" in portfolio_doc) else os.urandom(16)
+        
+        key, _ = EncryptionManager.derive_key(passphrase, p_salt)
+        set_stdio_session(uid, key)
+        logger.info(f"Stdio session successfully authenticated for user: {uid}")
+
 def main():
     parser = argparse.ArgumentParser(description="Run the InvestMind MCP Server")
     parser.add_argument(
@@ -191,6 +263,8 @@ def main():
     args = parser.parse_args()
 
     if args.transport == "stdio":
+        # Validate and configure session parameters from env variables
+        asyncio.run(validate_stdio_env())
         mcp.run(transport="stdio")
     elif args.transport == "sse":
         uvicorn.run(app, host=args.host, port=args.port)

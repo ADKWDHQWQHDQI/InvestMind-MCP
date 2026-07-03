@@ -8,7 +8,9 @@ from src.security.auth import (
     current_user_id,
     current_decryption_key,
     set_stdio_session,
-    get_authenticated_context
+    get_authenticated_context,
+    register_session,
+    create_access_token
 )
 from src.security.encryption import EncryptionManager
 
@@ -69,7 +71,7 @@ async def register_user(user_id: str, email: str, password_plain: str) -> dict:
 async def login(user_id: str, password_plain: str, passphrase: str) -> dict:
     """
     Authenticates the user credentials and derives the session decryption key from the passphrase.
-    Sets the process-level stdio session parameters.
+    Registers the session in memory and sets the process-level stdio parameters.
     """
     try:
         db = await get_db()
@@ -101,12 +103,17 @@ async def login(user_id: str, password_plain: str, passphrase: str) -> dict:
             
         key, _ = EncryptionManager.derive_key(passphrase, p_salt)
         
-        # Set session for stdio transport
+        # 1. Set process-level session for stdio transport
         set_stdio_session(user_id, key)
+        
+        # 2. Register session in memory cache for SSE/HTTP requests
+        session_id = register_session(user_id, key)
+        token = create_access_token(user_id, session_id)
         
         return {
             "success": True,
             "message": f"Successfully logged in as {user_id}.",
+            "token": token,
             "session_active": True
         }
     except Exception as e:

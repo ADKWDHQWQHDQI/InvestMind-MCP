@@ -14,19 +14,48 @@ from src.config import settings
 
 client = TestClient(app)
 
+from src.security.auth import register_session
+
+def hash_password(password: str, salt: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(salt + password.encode()).hexdigest()
+
 # Helper to generate a valid test token
 def get_test_token(user_id="user_test_1"):
     key, _ = EncryptionManager.derive_key("my-secure-passphrase")
-    return create_access_token(user_id, key.hex()), key
+    session_id = register_session(user_id, key)
+    return create_access_token(user_id, session_id), key
 
-def test_api_auth_token_endpoint():
-    """Tests exchanging passphrase for JWT."""
+@patch("src.main.get_db")
+def test_api_auth_token_endpoint(mock_get_db):
+    """Tests exchanging passphrase and password for JWT."""
+    mock_db = MagicMock()
+    mock_get_db.return_value = mock_db
+    
+    salt = os.urandom(16)
+    pwd_hash = hash_password("my-password", salt)
+    
+    async def mock_find_one(*args, **kwargs):
+        return {
+            "user_id": "user_test_1",
+            "salt": salt.hex(),
+            "password_hash": pwd_hash
+        }
+    mock_db["users"].find_one = MagicMock()
+    mock_db["users"].find_one.side_effect = mock_find_one
+    
     with patch("src.main.get_portfolio") as mock_get_portfolio:
-        mock_get_portfolio.return_value = {"salt": os.urandom(16).hex()}
+        async def mock_portfolio(*args, **kwargs):
+            return {"salt": os.urandom(16).hex()}
+        mock_get_portfolio.side_effect = mock_portfolio
         
         response = client.post(
             "/api/auth/token",
-            json={"user_id": "user_test_1", "passphrase": "my-secure-passphrase"}
+            json={
+                "user_id": "user_test_1",
+                "password": "my-password",
+                "passphrase": "my-secure-passphrase"
+            }
         )
         assert response.status_code == 200
         assert "token" in response.json()

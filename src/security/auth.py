@@ -1,8 +1,12 @@
 import contextvars
 import jwt
+import uuid
+import logging
 from datetime import datetime, timedelta
 from fastapi import Request, HTTPException, status
 from src.config import settings
+
+logger = logging.getLogger("investmind.security.auth")
 
 # Thread-local / Request-local context variables for the authenticated request (concurrent SSE)
 current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_id", default="")
@@ -12,6 +16,9 @@ current_decryption_key: contextvars.ContextVar[bytes] = contextvars.ContextVar("
 _session_user_id = ""
 _session_decryption_key = b""
 
+# In-memory secure session storage: session_id (str) -> {"user_id": str, "decryption_key": bytes, "expires_at": datetime}
+_active_sessions = {}
+
 def set_stdio_session(user_id: str, key_bytes: bytes):
     """
     Sets the global process-level session parameters for stdio transport.
@@ -19,6 +26,25 @@ def set_stdio_session(user_id: str, key_bytes: bytes):
     global _session_user_id, _session_decryption_key
     _session_user_id = user_id
     _session_decryption_key = key_bytes
+
+def register_session(user_id: str, key_bytes: bytes, expire_minutes: int = 60) -> str:
+    """
+    Registers a new session in-memory, mapping a random session ID to the derived decryption key.
+    """
+    # Periodic cleanup of expired sessions during new registration
+    now = datetime.utcnow()
+    expired_keys = [k for k, v in _active_sessions.items() if v["expires_at"] < now]
+    for k in expired_keys:
+        _active_sessions.pop(k, None)
+
+    session_id = str(uuid.uuid4())
+    expires_at = now + timedelta(minutes=expire_minutes)
+    _active_sessions[session_id] = {
+        "user_id": user_id,
+        "decryption_key": key_bytes,
+        "expires_at": expires_at
+    }
+    return session_id
 
 def get_authenticated_context() -> tuple[str, bytes]:
     """
@@ -36,15 +62,14 @@ def get_authenticated_context() -> tuple[str, bytes]:
         
     raise ValueError("Unauthorized or session key missing. Please authenticate using the login tool.")
 
-def create_access_token(user_id: str, derived_key_hex: str) -> str:
+def create_access_token(user_id: str, session_id: str) -> str:
     """
-    Creates a JWT access token containing the user_id and the derived encryption key.
-    The derived key is stored in the client-held token for session duration.
+    Creates a JWT access token containing the user_id and session_id (referencing key in RAM).
     """
     expire = datetime.utcnow() + timedelta(minutes=settings.TOKEN_EXPIRE_MINUTES)
     to_encode = {
         "sub": user_id,
-        "key": derived_key_hex,
+        "sid": session_id,
         "exp": expire
     }
     encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -52,16 +77,25 @@ def create_access_token(user_id: str, derived_key_hex: str) -> str:
 
 def decode_access_token(token: str) -> tuple[str, bytes]:
     """
-    Decodes and validates a JWT token.
-    Returns a tuple of (user_id, derived_key_bytes).
-    Raises jwt.PyJWTError if validation fails.
+    Decodes a JWT token and retrieves the decryption key from the in-memory session cache.
     """
+    # Periodic cleanup of expired sessions during decode
+    now = datetime.utcnow()
+    expired_keys = [k for k, v in _active_sessions.items() if v["expires_at"] < now]
+    for k in expired_keys:
+        _active_sessions.pop(k, None)
+
     payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     user_id: str = payload.get("sub")
-    key_hex: str = payload.get("key")
-    if not user_id or not key_hex:
+    session_id: str = payload.get("sid")
+    if not user_id or not session_id:
         raise jwt.PyJWTError("Token is missing required payload claims.")
-    return user_id, bytes.fromhex(key_hex)
+        
+    session_data = _active_sessions.get(session_id)
+    if not session_data:
+        raise jwt.PyJWTError("Session has expired or is invalid. Please log in again.")
+        
+    return user_id, session_data["decryption_key"]
 
 async def authenticate_request(request: Request) -> str:
     """

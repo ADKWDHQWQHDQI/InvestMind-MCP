@@ -4,28 +4,31 @@
 
 ---
 
-## 🔒 Privacy by Design
+## 🔒 Privacy & Zero-Knowledge Architecture
 
 We treat financial data with the highest security standards. The platform is designed so that even the developers cannot view your investment details:
 
 1. **RAM-Only Processing:** CAS PDF decryption, parsing, and normalization occur strictly in-memory. Decrypted files or plain text passwords are never written to disk or logged.
 2. **Zero PDF Storage:** The uploaded PDF byte stream is discarded immediately after parsing.
 3. **AES-256-GCM Encryption:** Portfolios are encrypted using AES-256-GCM before database insertion. The database only contains unreadable encrypted blobs.
-4. **Zero-Knowledge Key Derivation:** The encryption key can be derived on-the-fly using a user-provided passphrase. The server never stores the passphrase or the derived key, ensuring only the owner can decrypt the holdings.
+4. **Zero-Knowledge Key Derivation:** The decryption key is derived on-the-fly using a user-provided passphrase.
+5. **Secure In-Memory Session Cache:** Decryption keys are **never** stored in the JWT or sent back to the client. Keys live purely in-memory in a server-side session cache (`_active_sessions`) mapped to a temporary UUID session ID.
+6. **Query Anonymization (Decoy Mixing):** Queries to external APIs (Yahoo Finance for quotes and news) mix user tickers with random decoy tickers to anonymize the composition of your portfolio.
 
 ---
 
-## 🛠️ Exposed Tools
+## 🛠️ Exposed Tools & Modules
 
-InvestMind registers the following tools with the MCP protocol:
+The server exposes **20 modules** and over **120 tools** covering every aspect of portfolio management:
 
-* **`hello_mcp()`**: Verifies server connection.
-* **`upload_cas(user_id, cas_base64, password, encryption_passphrase)`**: Parses a password-protected CAS PDF, normalizes holdings, encrypts them, and saves to MongoDB.
-* **`get_holdings(user_id, encryption_passphrase)`**: Decrypts and lists the user's holdings.
-* **`get_portfolio_summary(user_id, encryption_passphrase)`**: Valuates the portfolio with live prices, calculates sector weightings, and evaluates concentration risks.
-* **`get_portfolio_news(user_id, encryption_passphrase)`**: Fetches corporate actions, earnings announcements, and dividend news matching the user's holdings.
-* **`update_watchlist(user_id, symbols)`**: Updates the stock symbols to monitor.
-* **`get_watchlist_summary(user_id)`**: Fetches live quotes for watchlisted symbols.
+* **Authentication (`auth`):** Registration, password login, profile management.
+* **Portfolio Connection (`portfolio_conn`):** Local path-based CAS statement uploads and broker integration mocks.
+* **Portfolio Metrics (`portfolio`):** Holdings retrieval, sector/market-cap/asset allocation analysis, portfolio comparison, cash positions.
+* **Stock Fundamental Analysis (`stock`):** Real-time PE/PB ratios, debt-to-equity, return on equity (ROE), peer comparison.
+* **Technical Indicators (`technical`):** Pure-python mathematical calculations for **RSI**, **MACD**, **Bollinger Bands**, **SMA/EMA**, **ATR**, and **Support/Resistance** breakouts.
+* **Taxation (`tax`):** Indian equity tax estimator for Short-Term Capital Gains (STCG - 20%), Long-Term Capital Gains (LTCG - 10% over ₹1.25L), dividend income tax, and tax-loss harvesting guides.
+* **Watchlist & Alerts (`watchlist` / `alerts`):** Multi-watchlist management, price/volume and stop-loss alert triggers.
+* **Diagnostics (`admin`):** Server health status, latency metrics, active sessions.
 
 ---
 
@@ -61,60 +64,38 @@ Create a `.env` file in the root directory:
 ```env
 MONGO_URI=mongodb+srv://<username>:<password>@cluster.mongodb.net/investmind
 MONGO_DB_NAME=investmind
-SERVER_ENCRYPTION_PASSPHRASE=use-a-strong-secret-phrase-for-fallback
-```
-
-### 3. Run Unit Tests
-
-Execute the test suite to verify encryption, database model validation, and parsing:
-
-```bash
-python -m pytest
+JWT_SECRET_KEY=generate-a-secure-random-secret-for-production
 ```
 
 ---
 
 ## 🖥️ Running the Server
 
-### Stdio Transport (Local CLI/IDE Clients)
+### Stdio Transport (Local CLI/IDE Clients like Claude Desktop)
 
-To use the server locally (e.g., with Claude Desktop or Cursor), run it with stdio transport:
+Stdio transport is stateful for the lifecycle of the process. You can configure automatic authentication on startup by providing the credentials in the environment:
 
 ```bash
+# On Windows (PowerShell):
+$env:INVESTMIND_USER_ID="my_username"
+$env:INVESTMIND_PASSWORD="my_secure_password"
+$env:INVESTMIND_PASSPHRASE="my_portfolio_passphrase"
 python src/main.py --transport stdio
+
+# On Linux/macOS:
+INVESTMIND_USER_ID="my_username" INVESTMIND_PASSWORD="my_secure_password" INVESTMIND_PASSPHRASE="my_portfolio_passphrase" python src/main.py --transport stdio
 ```
 
-### SSE Transport (Remote/Web/ChatGPT Clients)
+Alternatively, you can call the `login(user_id, password_plain, passphrase)` tool directly over the stdio session after launching the server.
 
-To run the server as an HTTP/SSE service for remote connections (such as custom apps or connectors in ChatGPT):
+### SSE Transport (Remote/Web/ChatGPT Connectors)
+
+To run the server as an HTTP/SSE service for remote connections:
 
 ```bash
 python src/main.py --transport sse --port 8000 --host 0.0.0.0
 ```
 
----
-
-## 🐳 Docker Deployment
-
-You can deploy the app along with a local MongoDB instance using Docker:
-
-```bash
-# Build and start services
-docker-compose up -d
-```
-
-To use a custom cloud MongoDB (like Atlas), update the `MONGO_URI` environment variable inside `docker-compose.yml` or set it in your hosting platform (Render, Netlify, etc.) before building.
-
----
-
-## 🔗 Connecting to ChatGPT
-
-1. **Host the server:** Deploy the server to a cloud provider or expose your local port `8000` via a secure tunnel (e.g., ngrok/localtunnel):
-   ```bash
-   ngrok http 8000
-   ```
-2. **Retrieve the URL:** You will get a public HTTPS URL (e.g. `https://random-subdomain.ngrok-free.app`).
-3. **Register in ChatGPT:**
-   * Go to ChatGPT Connectors or Custom Actions.
-   * Provide the server's endpoint: `https://your-domain.com/sse` (where ChatGPT connects to read tools) and `https://your-domain.com/messages` (for posting messages).
-   * ChatGPT will automatically query your tools, and you can begin chatting about your portfolio!
+Authenticating requests in SSE mode requires exchanging your username, password, and passphrase for an access token:
+1. POST `/api/auth/token` with `{"user_id": "...", "password": "...", "passphrase": "..."}` to obtain a JWT.
+2. Authenticate subsequent `/sse` and `/messages` requests by passing the token in the `Authorization: Bearer <token>` header or as a `?token=...` query parameter.

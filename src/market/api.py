@@ -94,25 +94,62 @@ async def get_ticker_info(ticker: str) -> dict:
     return info
 
 
+import random
+
+DECOY_TICKERS = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "BHARTIARTL.NS", "SBIN.NS"]
+
+def _mix_decoys(queries: list[str]) -> tuple[list[str], set[str]]:
+    """
+    Mixes in random decoy symbols to anonymize the portfolio composition.
+    Returns a shuffled list of queries (user + decoys) and the set of decoys.
+    """
+    user_set = set(queries)
+    possible_decoys = [d for d in DECOY_TICKERS if d not in user_set]
+    decoys_to_add = random.sample(possible_decoys, min(3, len(possible_decoys)))
+    
+    mixed_list = list(queries) + decoys_to_add
+    random.shuffle(mixed_list)
+    return mixed_list, set(decoys_to_add)
+
 async def get_live_prices(queries: list[str]) -> dict[str, float]:
     """
-    Resolves tickers and fetches live quotes in bulk.
+    Resolves tickers and fetches live quotes in bulk with query anonymization.
     """
+    if not queries:
+        return {}
+        
+    mixed_queries, decoys = _mix_decoys(queries)
     prices = {}
-    for q in queries:
+    
+    for q in mixed_queries:
         ticker = await resolve_ticker(q)
-        prices[q] = await get_live_price(ticker)
-    return prices
+        price = await get_live_price(ticker)
+        # Store quotes for both queries and resolved tickers to ease lookup mapping
+        prices[q] = price
+        if ticker != q:
+            prices[ticker] = price
+            
+    # Filter out decoy keys to protect user context
+    clean_prices = {}
+    for q in queries:
+        clean_prices[q] = prices.get(q)
+    return clean_prices
 
 async def get_stock_news(queries: list[str]) -> list[dict]:
     """
-    Fetches real news dynamically from Yahoo Finance matching the user's holdings.
+    Fetches real news dynamically from Yahoo Finance matching user's holdings with query anonymization.
     """
+    if not queries:
+        return []
+        
+    mixed_queries, decoys = _mix_decoys(queries)
     news_items = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     async with httpx.AsyncClient() as client:
-        for q in queries:
+        for q in mixed_queries:
+            # Skip fetching if it's a decoy to save network calls, OR fetch anyway to blend traffic.
+            # To achieve complete cryptographic blending, we perform the fetch for decoys too.
             ticker = await resolve_ticker(q)
             try:
                 url = "https://query2.finance.yahoo.com/v1/finance/search"
@@ -125,13 +162,16 @@ async def get_stock_news(queries: list[str]) -> list[dict]:
                     for art in articles[:2]:
                         publish_time = art.get("providerPublishTime")
                         timestamp = datetime.fromtimestamp(publish_time).strftime("%Y-%m-%d %H:%M:%S") if publish_time else ""
-                        news_items.append({
-                            "symbol": q,
-                            "title": art.get("title", ""),
-                            "source": art.get("publisher", ""),
-                            "link": art.get("link", ""),
-                            "timestamp": timestamp
-                        })
+                        
+                        # Only add to results if the query is not in the decoy set
+                        if q not in decoys:
+                            news_items.append({
+                                "symbol": q,
+                                "title": art.get("title", ""),
+                                "source": art.get("publisher", ""),
+                                "link": art.get("link", ""),
+                                "timestamp": timestamp
+                            })
             except Exception as e:
                 logger.error(f"Error fetching news for {ticker}: {e}")
     return news_items
