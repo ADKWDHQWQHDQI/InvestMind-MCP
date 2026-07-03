@@ -11,6 +11,7 @@ from typing import Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from fastapi import FastAPI, Request, Depends, HTTPException, status, File, UploadFile, Form
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from mcp.server.sse import SseServerTransport
 
@@ -124,7 +125,15 @@ async def generate_token(req: TokenRequest):
         
         # 5. Register session in-memory, mapping session_id -> key
         session_id = register_session(user_id, key)
-        
+        if user_id == "local_user":
+            from src.security.auth import _active_sessions
+            from datetime import datetime, timedelta
+            _active_sessions["local_session"] = {
+                "user_id": user_id,
+                "decryption_key": key,
+                "expires_at": datetime.utcnow() + timedelta(days=365)
+            }
+            
         # 6. Generate secure JWT carrying sub and sid (no raw key!)
         token = create_access_token(user_id, session_id)
         return {"token": token}
@@ -206,6 +215,323 @@ async def handle_messages(request: Request, user_id: str = Depends(authenticate_
     POST Messages handler. Validates authentication token on every JSON-RPC interaction.
     """
     await sse.handle_post_message(request.scope, request.receive, request._send)
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_portal():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InvestMind MCP Portal — Secure CAS Upload</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --card-bg: rgba(17, 25, 40, 0.75);
+            --primary: #4f46e5;
+            --primary-hover: #4338ca;
+            --accent: #10b981;
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+            --border-color: rgba(255, 255, 255, 0.08);
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(79, 70, 229, 0.15) 0, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.1) 0, transparent 50%);
+        }
+        .container {
+            width: 100%;
+            max-width: 550px;
+            padding: 20px;
+        }
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo {
+            font-size: 32px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #818cf8, #10b981);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            color: var(--text-color);
+            font-size: 15px;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+        input[type="text"]:focus, input[type="password"]:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+            background: rgba(255, 255, 255, 0.08);
+        }
+        .file-upload-box {
+            border: 2px dashed var(--border-color);
+            border-radius: 16px;
+            padding: 30px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(255, 255, 255, 0.01);
+        }
+        .file-upload-box:hover {
+            border-color: var(--primary);
+            background: rgba(79, 70, 229, 0.02);
+        }
+        .file-upload-box svg {
+            width: 40px;
+            height: 40px;
+            fill: none;
+            stroke: var(--text-muted);
+            stroke-width: 1.5;
+            margin-bottom: 12px;
+        }
+        .file-upload-box input {
+            display: none;
+        }
+        .file-upload-box p {
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+        .file-name {
+            margin-top: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--accent);
+            display: none;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: var(--primary);
+            border: none;
+            border-radius: 12px;
+            color: var(--text-color);
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        button:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+        button:disabled {
+            background: #4b5563;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .alert {
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            margin-bottom: 20px;
+            display: none;
+            line-height: 1.4;
+        }
+        .alert-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            color: #f87171;
+        }
+        .alert-success {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: #34d399;
+        }
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 10px;
+            display: none;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <div class="logo">InvestMind</div>
+                <div class="subtitle">Securely parse, encrypt, and sync your Consolidated Account Statement (CAS) PDF to your Claude MCP session.</div>
+            </div>
+
+            <div id="alert" class="alert"></div>
+
+            <form id="uploadForm">
+                <div class="form-group">
+                    <label for="pdfPassword">CAS PDF Password</label>
+                    <input type="password" id="pdfPassword" placeholder="Enter your CAS PDF password" required>
+                </div>
+
+                <div class="form-group">
+                    <label>CAS Statement PDF</label>
+                    <div class="file-upload-box" onclick="document.getElementById('fileInput').click()">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M12 4v12m0-12L8 8m4-4l4 4M4 20h16" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        <p>Click to browse and choose your CAS PDF file</p>
+                        <input type="file" id="fileInput" accept=".pdf" required>
+                        <div id="fileName" class="file-name"></div>
+                    </div>
+                </div>
+
+                <button type="submit" id="submitBtn">
+                    <div class="spinner" id="spinner"></div>
+                    <span id="btnText">Upload & Authenticate</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const fileNameDiv = document.getElementById('fileName');
+        const uploadForm = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const spinner = document.getElementById('spinner');
+        const btnText = document.getElementById('btnText');
+        const alertBox = document.getElementById('alert');
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                fileNameDiv.textContent = `Selected: ${fileInput.files[0].name}`;
+                fileNameDiv.style.display = 'block';
+            }
+        });
+
+        function showAlert(msg, isSuccess = false) {
+            alertBox.textContent = msg;
+            alertBox.className = `alert ${isSuccess ? 'alert-success' : 'alert-error'}`;
+            alertBox.style.display = 'block';
+        }
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const file = fileInput.files[0];
+            const pdfPassword = document.getElementById('pdfPassword').value;
+
+            if (!file) {
+                showAlert('Please choose a file to upload.');
+                return;
+            }
+
+            // Start Loading
+            submitBtn.disabled = true;
+            spinner.style.display = 'block';
+            btnText.textContent = 'Processing...';
+            alertBox.style.display = 'none';
+
+            try {
+                // 1. Authenticate local_user session first to get access token and derive key
+                const tokenResponse = await fetch('/api/auth/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: 'local_user',
+                        password: 'local_password',
+                        passphrase: pdfPassword // Using PDF password as the master passphrase for Zero-Knowledge
+                    })
+                });
+
+                if (!tokenResponse.ok) {
+                    const err = await tokenResponse.json();
+                    throw new Error(err.detail || 'Authentication failed.');
+                }
+
+                const { token } = await tokenResponse.json();
+
+                // 2. Upload file securely to the parsed endpoint using the JWT
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('password', pdfPassword);
+
+                const uploadResponse = await fetch('/api/portfolio/upload', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: formData
+                });
+
+                if (!uploadResponse.ok) {
+                    const err = await uploadResponse.json();
+                    throw new Error(err.detail || 'Upload failed.');
+                }
+
+                showAlert('Success! Your portfolio has been parsed, encrypted, and synced. You can now use your tools in Claude Desktop!', true);
+                uploadForm.reset();
+                fileNameDiv.style.display = 'none';
+            } catch (error) {
+                showAlert(error.message);
+            } finally {
+                // Stop Loading
+                submitBtn.disabled = false;
+                spinner.style.display = 'none';
+                btnText.textContent = 'Upload & Authenticate';
+            }
+        });
+    </script>
+</body>
+</html>"""
 
 from src.security.auth import set_stdio_session
 import asyncio
