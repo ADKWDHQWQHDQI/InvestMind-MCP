@@ -1,6 +1,9 @@
 import hashlib
 import os
 import logging
+import random
+import string
+from datetime import datetime, timedelta
 from typing import Optional
 from src.mcp_server import mcp
 from src.database.connection import get_db
@@ -17,14 +20,21 @@ from src.security.encryption import EncryptionManager
 logger = logging.getLogger("investmind.tools.auth")
 
 def hash_password(password: str, salt: bytes) -> str:
-    """Helper to hash user passwords securely using SHA-256."""
-    return hashlib.sha256(salt + password.encode()).hexdigest()
+    """Helper to hash user passwords securely using PBKDF2-HMAC-SHA256 with 100,000 iterations."""
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100000).hex()
 
 @mcp.tool()
 async def register_user(user_id: str, email: str, password_plain: str) -> dict:
     """
     Registers a new user profile securely in the database.
     """
+    # Restrict account creation over public MCP in production mode
+    if os.environ.get("ENV") == "production":
+        return {
+            "success": False,
+            "message": "Public user registration via MCP is disabled in production. Please use the official signup portal."
+        }
+
     try:
         db = await get_db()
         if db is None:
@@ -41,6 +51,11 @@ async def register_user(user_id: str, email: str, password_plain: str) -> dict:
         salt = os.urandom(16)
         pwd_hash = hash_password(password_plain, salt)
         
+        # Generate secure random 6-digit verification code
+        code = "".join(random.choices(string.digits, k=6))
+        code_hash = hash_password(code, salt)
+        expiry = datetime.utcnow() + timedelta(minutes=15)
+        
         # Create user profile document
         profile = {
             "user_id": user_id,
@@ -50,7 +65,9 @@ async def register_user(user_id: str, email: str, password_plain: str) -> dict:
             "is_verified": False,
             "phone": None,
             "encrypted_broker_credentials": None,
-            "created_at": None
+            "created_at": datetime.utcnow(),
+            "email_verification_hash": code_hash,
+            "email_verification_expires_at": expiry
         }
         await db["users"].insert_one(profile)
         
@@ -62,7 +79,10 @@ async def register_user(user_id: str, email: str, password_plain: str) -> dict:
             upsert=True
         )
         
-        return {"success": True, "message": f"User {user_id} registered successfully. Please verify your email."}
+        return {
+            "success": True,
+            "message": f"User {user_id} registered successfully. Verification code sent (for testing: {code}). Please verify your email."
+        }
     except Exception as e:
         logger.error(f"Error registering user: {e}")
         return {"success": False, "message": str(e)}
@@ -208,7 +228,7 @@ async def delete_account() -> dict:
         await db["alerts"].delete_many({"user_id": uid})
         await db["preferences"].delete_one({"user_id": uid})
         
-        logout()
+        await logout()
         return {"success": True, "message": "Account and all associated encrypted data permanently deleted."}
     except ValueError as ve:
         return {"success": False, "message": str(ve)}
@@ -224,10 +244,40 @@ async def verify_email(code: str) -> dict:
         if db is None:
             return {"success": False, "message": "Database connection unavailable."}
             
-        if code == "123456" or len(code) == 6: # Simulated verification code
-            await db["users"].update_one({"user_id": uid}, {"$set": {"is_verified": True}})
-            return {"success": True, "message": "Email verified successfully."}
-        return {"success": False, "message": "Invalid verification code."}
+        user = await db["users"].find_one({"user_id": uid})
+        if not user:
+            return {"success": False, "message": "User profile not found."}
+            
+        salt_bytes = bytes.fromhex(user["salt"])
+        expected_hash = hash_password(code, salt_bytes)
+        
+        saved_hash = user.get("email_verification_hash")
+        expires_at = user.get("email_verification_expires_at")
+        
+        if not saved_hash or not expires_at:
+            return {"success": False, "message": "No active verification request found."}
+            
+        # Parse expires_at if it was saved as string (depends on DB serializer)
+        if isinstance(expires_at, str):
+            try:
+                expires_at = datetime.fromisoformat(expires_at)
+            except Exception:
+                pass
+                
+        if datetime.utcnow() > expires_at:
+            return {"success": False, "message": "Verification code has expired. Please request a new one."}
+            
+        if saved_hash != expected_hash:
+            return {"success": False, "message": "Invalid verification code."}
+            
+        await db["users"].update_one(
+            {"user_id": uid},
+            {
+                "$set": {"is_verified": True},
+                "$unset": {"email_verification_hash": "", "email_verification_expires_at": ""}
+            }
+        )
+        return {"success": True, "message": "Email verified successfully."}
     except ValueError as ve:
         return {"success": False, "message": str(ve)}
 

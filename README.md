@@ -13,7 +13,7 @@ We treat financial data with the highest security standards. The platform is des
 3. **AES-256-GCM Encryption:** Portfolios are encrypted using AES-256-GCM before database insertion. The database only contains unreadable encrypted blobs.
 4. **Zero-Knowledge Key Derivation:** The decryption key is derived on-the-fly using a user-provided passphrase.
 5. **Secure In-Memory Session Cache:** Decryption keys are **never** stored in the JWT or sent back to the client. Keys live purely in-memory in a server-side session cache (`_active_sessions`) mapped to a temporary UUID session ID.
-6. **Query Anonymization (Decoy Mixing):** Queries to external APIs (Yahoo Finance for quotes and news) mix user tickers with random decoy tickers to anonymize the composition of your portfolio.
+6. **Query Traffic Blending (Decoy Mixing):** Queries to external APIs (Yahoo Finance for quotes and news) mix user tickers with random decoy tickers to make it harder to infer your exact portfolio composition from network traffic. **Note:** This is a basic traffic blending technique, not a cryptographic anonymization mechanism. It does not meaningfully anonymize your holdings against a determined network observer.
 
 ---
 

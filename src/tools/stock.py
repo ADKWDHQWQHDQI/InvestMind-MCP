@@ -191,38 +191,75 @@ async def get_stock_ratios(symbol: str) -> dict:
 @mcp.tool()
 async def get_stock_shareholding(symbol: str) -> dict:
     """
-    Returns simulated/mock promoter, institutional, and retail shareholding split.
+    Returns promoter, institutional, and retail shareholding split from Yahoo Finance.
     """
-    return {
-        "symbol": symbol,
-        "promoters_pct": 52.4,
-        "foreign_institutions_fii_pct": 18.2,
-        "domestic_institutions_dii_pct": 14.8,
-        "retail_public_pct": 14.6,
-        "last_updated": "2026-03-31"
-    }
+    try:
+        ticker = await resolve_ticker(symbol)
+        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=majorHoldersBreakdown"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get("quoteSummary", {}).get("result", [{}])[0]
+                breakdown = result.get("majorHoldersBreakdown", {})
+                
+                insiders_pct = (breakdown.get("insidersPercentHeld", {}).get("value") or 0.0) * 100
+                institutions_pct = (breakdown.get("institutionsPercentHeld", {}).get("value") or 0.0) * 100
+                float_pct = (breakdown.get("institutionsFloatPercentHeld", {}).get("value") or 0.0) * 100
+                
+                return {
+                    "symbol": symbol,
+                    "resolved_ticker": ticker,
+                    "insiders_promoters_pct": round(insiders_pct, 2),
+                    "institutions_pct": round(institutions_pct, 2),
+                    "institutions_float_pct": round(float_pct, 2),
+                    "public_retail_pct": round(max(0, 100 - insiders_pct - institutions_pct), 2)
+                }
+        return {"symbol": symbol, "error": "Shareholding data unavailable for this stock."}
+    except Exception as e:
+        return {"symbol": symbol, "error": str(e)}
 
 @mcp.tool()
 async def get_stock_peers(symbol: str) -> list[dict]:
     """
-    Returns competitor peers within the same sector.
+    Returns competitor peers within the same sector by querying Yahoo Finance.
     """
     try:
-        details = await get_stock_details(symbol)
-        sector = details.get("sector", "Others")
+        ticker = await resolve_ticker(symbol)
+        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=recommendedSymbols"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         
-        # Mapping common sectors to peers in India
-        peers_map = {
-            "Technology": ["INFY.NS", "TCS.NS", "WIPRO.NS", "HCLTECH.NS"],
-            "Financial Services": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "RECLTD.NS"],
-            "Financial Services (NBFC)": ["RECLTD.NS", "PFC.NS", "MUTHOOTFIN.NS"],
-            "Energy": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS"]
-        }
+        peer_tickers = []
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get("quoteSummary", {}).get("result", [{}])[0]
+                recommended = result.get("recommendedSymbols", [])
+                for rec in recommended[:5]:
+                    peer_tickers.append(rec.get("symbol", ""))
         
-        peer_symbols = peers_map.get(sector, ["RELIANCE.NS", "TCS.NS", "INFY.NS"])
+        # If recommended symbols API returned nothing, fall back to sector-based search
+        if not peer_tickers:
+            details = await get_stock_details(symbol)
+            sector = details.get("sector", "")
+            if sector:
+                search_url = "https://query2.finance.yahoo.com/v1/finance/search"
+                params = {"q": f"{sector} India", "quotesCount": 6}
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(search_url, headers=headers, params=params, timeout=5.0)
+                    if resp.status_code == 200:
+                        quotes = resp.json().get("quotes", [])
+                        for q in quotes:
+                            sym = q.get("symbol", "")
+                            if sym and sym != ticker:
+                                peer_tickers.append(sym)
+        
         results = []
-        for p in peer_symbols:
-            if p != symbol:
+        for p in peer_tickers[:5]:
+            if p != ticker:
                 price = await get_live_price(p)
                 results.append({"symbol": p, "price": price})
         return results
@@ -262,12 +299,50 @@ async def get_stock_valuation(symbol: str) -> dict:
 @mcp.tool()
 async def get_stock_events(symbol: str) -> list[dict]:
     """
-    Lists upcoming results releases, AGM dates, and calendar events.
+    Lists upcoming results releases, AGM dates, and calendar events from Yahoo Finance.
     """
-    return [
-        {"event": "Board Meeting (Financial Results)", "symbol": symbol, "date": "2026-07-15"},
-        {"event": "Annual General Meeting (AGM)", "symbol": symbol, "date": "2026-08-10"}
-    ]
+    try:
+        ticker = await resolve_ticker(symbol)
+        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=calendarEvents"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get("quoteSummary", {}).get("result", [{}])[0]
+                calendar = result.get("calendarEvents", {})
+                
+                events = []
+                # Earnings date
+                earnings = calendar.get("earnings", {})
+                earnings_dates = earnings.get("earningsDate", [])
+                for ed in earnings_dates:
+                    ts = ed.get("value")
+                    if ts:
+                        from datetime import datetime
+                        dt = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                        events.append({"event": "Earnings Date", "symbol": symbol, "date": dt})
+                
+                # Ex-dividend date
+                ex_div = calendar.get("exDividendDate", {}).get("value")
+                if ex_div:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(ex_div).strftime("%Y-%m-%d")
+                    events.append({"event": "Ex-Dividend Date", "symbol": symbol, "date": dt})
+                
+                # Dividend date
+                div_date = calendar.get("dividendDate", {}).get("value")
+                if div_date:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(div_date).strftime("%Y-%m-%d")
+                    events.append({"event": "Dividend Payment Date", "symbol": symbol, "date": dt})
+                
+                return events if events else [{"symbol": symbol, "message": "No upcoming events found."}]
+        return [{"symbol": symbol, "message": "Could not retrieve calendar events."}]
+    except Exception as e:
+        logger.error(f"Error in get_stock_events: {e}")
+        return [{"symbol": symbol, "error": str(e)}]
 
 @mcp.tool()
 async def get_stock_news(symbol: str) -> list[dict]:

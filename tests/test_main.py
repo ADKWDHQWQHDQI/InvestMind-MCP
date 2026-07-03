@@ -18,7 +18,7 @@ from src.security.auth import register_session
 
 def hash_password(password: str, salt: bytes) -> str:
     import hashlib
-    return hashlib.sha256(salt + password.encode()).hexdigest()
+    return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100000).hex()
 
 # Helper to generate a valid test token
 def get_test_token(user_id="user_test_1"):

@@ -1,35 +1,61 @@
 import logging
+import time
+import os
 from src.mcp_server import mcp
 
 logger = logging.getLogger("investmind.tools.admin")
 
+__version__ = "2.0.0"
+_server_start_time = time.time()
+
 @mcp.tool()
-def health() -> dict:
+async def health() -> dict:
     """
-    Returns the server operational health status.
+    Returns the server operational health status with a live MongoDB ping.
     """
-    return {"status": "HEALTHY", "database": "CONNECTED", "apis": "OK"}
+    db_status = "UNKNOWN"
+    try:
+        from src.database.connection import get_db
+        db = await get_db()
+        if db is not None:
+            await db.command("ping")
+            db_status = "CONNECTED"
+        else:
+            db_status = "DISCONNECTED"
+    except Exception as e:
+        db_status = f"ERROR: {e}"
+
+    return {"status": "HEALTHY" if db_status == "CONNECTED" else "DEGRADED", "database": db_status}
 
 @mcp.tool()
 def metrics() -> dict:
     """
-    Returns server resource usage and response latency metrics.
+    Returns server resource usage, uptime, and active session count.
     """
-    return {"uptime_seconds": 12800, "active_sessions": 1, "cpu_usage_pct": 2.4, "memory_usage_pct": 18.5}
+    from src.security.auth import _active_sessions
+    uptime = round(time.time() - _server_start_time, 1)
+    return {
+        "uptime_seconds": uptime,
+        "active_sessions": len(_active_sessions),
+        "env": os.environ.get("ENV", "development"),
+        "pid": os.getpid()
+    }
 
 @mcp.tool()
 def version() -> str:
     """
     Returns the server build and protocol version.
     """
-    return "InvestMind MCP Server version 1.28.1"
+    return f"InvestMind MCP Server version {__version__}"
 
 @mcp.tool()
 def usage() -> dict:
     """
     Returns API limits and active user request rates.
     """
-    return {"requests_today": 42, "limit_today": 1000, "remaining": 958}
+    return {
+        "message": "Rate limiting is not yet implemented. This tool will return usage statistics once rate limiting is configured."
+    }
 
 @mcp.tool()
 def ping() -> str:
@@ -43,9 +69,14 @@ def status() -> dict:
     """
     Returns structural server configuration and status.
     """
-    return {"running": True, "mode": "PRODUCTION", "zero_knowledge_enforced": True}
+    return {
+        "running": True,
+        "mode": os.environ.get("ENV", "development"),
+        "zero_knowledge_enforced": True,
+        "version": __version__
+    }
 
 @mcp.tool()
 def hello_mcp() -> str:
     """A hello tool to verify connectivity."""
-    return "Hello Sandeep! MCP is working."
+    return "Hello! InvestMind MCP is working."

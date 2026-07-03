@@ -253,14 +253,15 @@ async def get_small_holdings(limit: int = 5) -> list[dict]:
     return valued[:limit]
 
 @mcp.tool()
-async def get_recent_changes() -> list[dict]:
+async def get_recent_changes() -> dict:
     """
-    Returns recent buy/sell transaction changes inside the connected broker accounts.
+    Returns recent buy/sell transaction changes from connected broker accounts.
+    Requires an active broker API connection with transaction history support.
     """
-    return [
-        {"action": "BUY", "symbol": "RECLTD.NS", "quantity": 20, "price": 435.2, "date": "2026-06-25"},
-        {"action": "BUY", "symbol": "INFY.NS", "quantity": 5, "price": 1420.0, "date": "2026-06-20"}
-    ]
+    return {
+        "transactions": [],
+        "message": "Transaction history requires a live broker API connection (Zerodha/Groww/Angel). CAS statements do not include transaction-level data."
+    }
 
 @mcp.tool()
 async def compare_portfolios(other_holdings: list[dict]) -> dict:

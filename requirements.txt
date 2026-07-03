@@ -12,3 +12,5 @@ python-multipart>=0.0.5
 pytest>=7.0
 httpx>=0.24.0
 pyjwt>=2.4.0
+casparser>=0.6.0
+anyio>=3.0

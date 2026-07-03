@@ -1,84 +1,81 @@
 import logging
+from datetime import datetime
+from typing import Optional
 from src.mcp_server import mcp
 from src.tools.portfolio import get_holdings, get_portfolio_pnl
 from src.market.api import get_live_prices, get_ticker_info, resolve_ticker
 
 logger = logging.getLogger("investmind.tools.tax")
 
-# Mock realized transactions for capital gains tax calculations
-MOCK_REALIZED_TRANSACTIONS = [
-    {
-        "symbol": "INFY.NS",
-        "qty": 20,
-        "buy_price": 1350.0,
-        "sell_price": 1450.0,
-        "buy_date": "2025-06-10",
-        "sell_date": "2026-06-15"  # Held > 1 year: LTCG
-    },
-    {
-        "symbol": "TCS.NS",
-        "qty": 10,
-        "buy_price": 3400.0,
-        "sell_price": 3200.0,
-        "buy_date": "2026-01-15",
-        "sell_date": "2026-06-15"  # Held <= 1 year: Short-term Loss
-    },
-    {
-        "symbol": "RECLTD.NS",
-        "qty": 50,
-        "buy_price": 380.0,
-        "sell_price": 450.0,
-        "buy_date": "2026-03-01",
-        "sell_date": "2026-06-20"  # Held <= 1 year: STCG
-    }
-]
-
 @mcp.tool()
-async def calculate_capital_gains() -> dict:
+async def calculate_capital_gains(transactions: list[dict]) -> dict:
     """
-    Computes Indian STCG and LTCG taxes on equity holdings from realized transactions.
-    STCG: 20% on holdings <= 365 days.
-    LTCG: 10% on gains exceeding ₹1.25L on holdings > 365 days.
+    Computes Indian STCG and LTCG taxes on equity holdings from user-provided realized transactions.
+    STCG: 20% on holdings held <= 365 days.
+    LTCG: 10% on gains exceeding ₹1.25L on holdings held > 365 days.
+
+    Each transaction dict must contain:
+      - symbol: str (stock ticker)
+      - qty: int (number of shares)
+      - buy_price: float (purchase price per share)
+      - sell_price: float (sale price per share)
+      - buy_date: str (YYYY-MM-DD format)
+      - sell_date: str (YYYY-MM-DD format)
     """
+    if not transactions:
+        return {
+            "summary": {
+                "total_realized_stcg": 0.0, "total_realized_ltcg": 0.0,
+                "exempt_ltcg": 0.0, "estimated_stcg_tax": 0.0,
+                "estimated_ltcg_tax": 0.0, "total_capital_gains_tax": 0.0
+            },
+            "transactions": [],
+            "message": "No transactions provided. Pass your realized buy/sell transactions to calculate capital gains tax."
+        }
+
     stcg_gains = 0.0
     ltcg_gains = 0.0
-    
-    from datetime import datetime
-    
     details = []
-    for tx in MOCK_REALIZED_TRANSACTIONS:
-        buy_dt = datetime.strptime(tx["buy_date"], "%Y-%m-%d")
-        sell_dt = datetime.strptime(tx["sell_date"], "%Y-%m-%d")
-        holding_days = (sell_dt - buy_dt).days
-        
-        gain_per_share = tx["sell_price"] - tx["buy_price"]
-        total_gain = gain_per_share * tx["qty"]
-        
-        is_long_term = holding_days > 365
-        
-        if is_long_term:
-            ltcg_gains += total_gain
-            category = "LTCG"
-        else:
-            stcg_gains += total_gain
-            category = "STCG"
-            
-        details.append({
-            "symbol": tx["symbol"],
-            "qty": tx["qty"],
-            "holding_period_days": holding_days,
-            "category": category,
-            "realized_gain": round(total_gain, 2)
-        })
-        
+
+    for tx in transactions:
+        try:
+            buy_dt = datetime.strptime(tx["buy_date"], "%Y-%m-%d")
+            sell_dt = datetime.strptime(tx["sell_date"], "%Y-%m-%d")
+            holding_days = (sell_dt - buy_dt).days
+
+            gain_per_share = tx["sell_price"] - tx["buy_price"]
+            total_gain = gain_per_share * tx["qty"]
+
+            is_long_term = holding_days > 365
+
+            if is_long_term:
+                ltcg_gains += total_gain
+                category = "LTCG"
+            else:
+                stcg_gains += total_gain
+                category = "STCG"
+
+            details.append({
+                "symbol": tx["symbol"],
+                "qty": tx["qty"],
+                "holding_period_days": holding_days,
+                "category": category,
+                "realized_gain": round(total_gain, 2)
+            })
+        except (KeyError, ValueError) as e:
+            details.append({
+                "symbol": tx.get("symbol", "UNKNOWN"),
+                "error": f"Invalid transaction data: {e}"
+            })
+
     # Calculate Indian Capital Gains Tax (2026 rates)
     # LTCG exempt up to 1.25L (125,000 INR)
     taxable_ltcg = max(0.0, ltcg_gains - 125000.0)
     ltcg_tax = taxable_ltcg * 0.10
-    
+
     # STCG taxed at 20%
     stcg_tax = max(0.0, stcg_gains) * 0.20
-    
+
     return {
         "summary": {
             "total_realized_stcg": round(stcg_gains, 2),
@@ -92,16 +89,19 @@ async def calculate_capital_gains() -> dict:
     }
 
 @mcp.tool()
-async def calculate_tax() -> dict:
+async def calculate_tax(transactions: Optional[list[dict]] = None) -> dict:
     """
-    Computes total tax liability by summing capital gains and dividend income tax.
+    Computes total tax liability by summing capital gains tax (from user-provided transactions)
+    and estimated dividend income tax (from active portfolio).
+
+    If no transactions are provided, only dividend tax is estimated.
     """
-    gains = await calculate_capital_gains()
+    gains = await calculate_capital_gains(transactions or [])
     div_income = await dividend_income()
-    
+
     # Dividend income in India is taxed at slab rates. We assume a conservative 20% slab rate.
     div_tax = div_income.get("total_estimated_dividend", 0.0) * 0.20
-    
+
     total_tax = gains["summary"]["total_capital_gains_tax"] + div_tax
     return {
         "capital_gains_tax": gains["summary"]["total_capital_gains_tax"],
@@ -110,13 +110,14 @@ async def calculate_tax() -> dict:
     }
 
 @mcp.tool()
-async def download_tax_report() -> dict:
+async def download_tax_report(transactions: Optional[list[dict]] = None) -> dict:
     """
     Generates a structured, downloadable text-format capital gains tax report.
+    Pass your realized transactions or leave empty for a dividend-only report.
     """
-    tax = await calculate_tax()
-    gains = await calculate_capital_gains()
-    
+    tax = await calculate_tax(transactions)
+    gains = await calculate_capital_gains(transactions or [])
+
     report = []
     report.append("==================================================")
     report.append("      INVESTMIND ANNUAL CAPITAL GAINS TAX REPORT  ")
@@ -131,15 +132,15 @@ async def download_tax_report() -> dict:
     report.append("--------------------------------------------------")
     report.append(f"TOTAL TAX PAYABLE: Rs. {tax['total_estimated_tax']}")
     report.append("==================================================")
-    
+
     return {"success": True, "report_text": "\n".join(report)}
 
 @mcp.tool()
-async def realized_pnl() -> dict:
+async def realized_pnl(transactions: Optional[list[dict]] = None) -> dict:
     """
-    Returns total realized profit/loss from completed transactions.
+    Returns total realized profit/loss from user-provided completed transactions.
     """
-    gains = await calculate_capital_gains()
+    gains = await calculate_capital_gains(transactions or [])
     total = gains["summary"]["total_realized_stcg"] + gains["summary"]["total_realized_ltcg"]
     return {
         "total_realized_pnl": round(total, 2),
@@ -167,28 +168,28 @@ async def dividend_income() -> dict:
         holdings = await get_holdings()
         if not holdings:
             return {"total_estimated_dividend": 0.0}
-            
+
         symbols = [await resolve_ticker(h.get("isin", h["symbol"])) for h in holdings]
         prices = await get_live_prices(symbols)
-        
+
         total_dividend = 0.0
         details = []
         for h, sym in zip(holdings, symbols):
             qty = h["quantity"]
             price = prices.get(sym) or h.get("average_price", 0.0)
             val = qty * price
-            
+
             info = await get_ticker_info(sym)
             div_yield = info.get("dividend_yield", 0.0)
             est_div = round(val * div_yield, 2)
-            
+
             total_dividend += est_div
             details.append({
                 "symbol": sym,
                 "dividend_yield": div_yield,
                 "estimated_payout": est_div
             })
-            
+
         return {
             "total_estimated_dividend": round(total_dividend, 2),
             "dividend_by_stock": details
@@ -206,23 +207,23 @@ async def tax_loss_harvesting() -> dict:
         holdings = await get_holdings()
         if not holdings:
             return {"message": "Your portfolio is empty.", "harvestable_loss": 0.0, "opportunities": []}
-            
+
         symbols = [await resolve_ticker(h.get("isin", h["symbol"])) for h in holdings]
         prices = await get_live_prices(symbols)
-        
+
         total_loss = 0.0
         opportunities = []
-        
+
         for h, sym in zip(holdings, symbols):
             qty = h["quantity"]
             avg_price = h.get("average_price", 0.0)
             live_price = prices.get(sym)
-            
+
             if live_price is not None and live_price < avg_price:
                 loss_per_share = avg_price - live_price
                 loss_val = round(loss_per_share * qty, 2)
                 total_loss += loss_val
-                
+
                 opportunities.append({
                     "symbol": sym,
                     "quantity": qty,
@@ -231,7 +232,7 @@ async def tax_loss_harvesting() -> dict:
                     "harvestable_loss": loss_val,
                     "suggestion": f"Sell {sym} to realize Rs. {loss_val} loss, which can reduce your taxable capital gains. You can buy it back after 30 days if you wish to maintain exposure."
                 })
-                
+
         return {
             "total_harvestable_loss": round(total_loss, 2),
             "opportunities": opportunities

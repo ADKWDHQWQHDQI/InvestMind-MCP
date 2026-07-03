@@ -195,7 +195,9 @@ async def upload_cas(pdf_path: str, password: Optional[str] = None) -> dict:
 @mcp.tool()
 async def refresh_portfolio() -> dict:
     """
-    Refreshes holdings by querying active broker APIs (or simulates data refresh if using mock).
+    Refreshes holdings by querying active broker APIs.
+    ⚠️ SIMULATED: For brokers without real API integration, returns a preview
+    of sample holdings. Simulated data is NEVER persisted to the database.
     """
     try:
         uid, key = get_authenticated_context()
@@ -206,23 +208,21 @@ async def refresh_portfolio() -> dict:
         if status.get("type") == "CAS PDF":
             return {"success": True, "message": "Portfolio refreshed from CAS statement data."}
             
-        # In a real environment, query broker APIs.
-        # We simulate this by generating mock holdings for the connected broker.
-        mock_holdings = [
+        # In a real environment, query broker APIs here.
+        # For brokers without live API integration, return a simulated preview.
+        # ⚠️ SAFETY: Mock data is returned for display only and is NOT saved to the database.
+        simulated_holdings = [
             {"symbol": "INFY", "isin": "INE009A01021", "name": "Infosys Ltd", "quantity": 50, "average_price": 1400.0, "asset_class": "Equity"},
             {"symbol": "TCS", "isin": "INE467B01029", "name": "Tata Consultancy Services Ltd", "quantity": 25, "average_price": 3200.0, "asset_class": "Equity"},
             {"symbol": "RECLTD", "isin": "INE020B01018", "name": "REC Ltd", "quantity": 120, "average_price": 420.0, "asset_class": "Equity"}
         ]
         
-        # Retrieve existing salt to retain consistency
-        doc = await get_portfolio(uid)
-        salt_hex = doc["salt"] if doc else os.urandom(16).hex()
-        
-        holdings_json = json.dumps(mock_holdings)
-        encrypted_data = EncryptionManager.encrypt(holdings_json, key)
-        
-        await save_portfolio(uid, encrypted_data, salt_hex)
-        return {"success": True, "message": f"Holdings refreshed successfully from {status.get('type')} API."}
+        return {
+            "success": True,
+            "is_simulated": True,
+            "message": f"⚠️ Simulated refresh from {status.get('type')} (no real API integration yet). Data shown is for preview only and has NOT been saved.",
+            "preview_holdings": simulated_holdings
+        }
     except ValueError as ve:
         return {"success": False, "message": str(ve)}
     except Exception as e:
