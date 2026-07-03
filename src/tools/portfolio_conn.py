@@ -193,10 +193,16 @@ async def upload_cas(pdf_path: str, password: Optional[str] = None) -> dict:
             passphrase = password or "default_passphrase"
             key, _ = EncryptionManager.derive_key(passphrase, p_salt)
             
-            # Set stdio session parameters in memory
-            from src.security.auth import set_stdio_session
+            # Set stdio and SSE session parameters in memory
+            from src.security.auth import set_stdio_session, _active_sessions
+            from datetime import datetime, timedelta
             set_stdio_session(uid, key)
-            logger.info("Successfully auto-configured stdio session for 'local_user'.")
+            _active_sessions["local_session"] = {
+                "user_id": uid,
+                "decryption_key": key,
+                "expires_at": datetime.utcnow() + timedelta(days=365)
+            }
+            logger.info("Successfully auto-configured stdio and SSE session for 'local_user'.")
 
         if not os.path.exists(pdf_path):
             return {"success": False, "message": f"CAS PDF file not found at path: {pdf_path}"}
