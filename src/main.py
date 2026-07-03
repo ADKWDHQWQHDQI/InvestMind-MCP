@@ -28,7 +28,7 @@ import src.tools.earnings
 import src.tools.watchlist
 import src.tools.alerts
 import src.tools.technical
-import src.tools.ai_analysis
+import src.tools.portfolio_intelligence
 import src.tools.tax
 import src.tools.market
 import src.tools.optimization

@@ -1,6 +1,6 @@
 import logging
 from src.mcp_server import mcp
-from src.tools.ai_analysis import portfolio_risk, suggest_rebalancing
+from src.tools.portfolio_intelligence import largest_risks, rebalance_portfolio
 from src.tools.tax import tax_loss_harvesting
 from src.tools.corp_actions import get_upcoming_actions
 from src.tools.earnings import get_upcoming_results
@@ -14,8 +14,8 @@ async def portfolio_copilot(query: str) -> str:
     """
     Your comprehensive personal financial copilot agent. Answer complex portfolio queries.
     """
-    risk = await portfolio_risk()
-    reb = await suggest_rebalancing()
+    risk = await largest_risks()
+    reb = await rebalance_portfolio()
     return (
         f"**InvestMind Portfolio Copilot Response**\n"
         f"Regarding: '{query}'\n"
@@ -59,12 +59,12 @@ async def portfolio_health_agent() -> str:
     """
     Health check agent reporting concentration, diversification, and rebalance triggers.
     """
-    from src.tools.ai_analysis import diversification_score
-    div = await diversification_score()
-    reb = await suggest_rebalancing()
+    from src.tools.portfolio_intelligence import portfolio_health
+    div = await portfolio_health()
+    reb = await rebalance_portfolio()
     return (
         f"**Portfolio Health Agent Report**\n"
-        f"- Diversification Score: {div['diversification_score']}/100 ({div['rating']})\n"
+        f"- Diversification Score: {div['diversification_metric']}/100 ({div['rating']})\n"
         f"- Rebalancing Actions: {reb['status']}"
     )
 
@@ -73,7 +73,7 @@ async def risk_agent() -> str:
     """
     Risk monitoring agent tracking stock betas and drawdown metrics.
     """
-    risk = await portfolio_risk()
+    risk = await largest_risks()
     return f"Risk Agent Report: Active portfolio risk level is evaluated as **{risk['risk_level']}**."
 
 @mcp.tool()

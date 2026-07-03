@@ -1,6 +1,6 @@
 import logging
 from src.mcp_server import mcp
-from src.tools.ai_analysis import explain_stock, analyze_portfolio
+from src.tools.portfolio_intelligence import analyze_portfolio, analyze_stock
 from src.tools.stock import get_stock_details
 from src.tools.earnings import summarize_results
 from src.tools.news import get_market_news, explain_news_impact as news_impact
@@ -87,7 +87,8 @@ async def explain_company(symbol: str) -> str:
     """
     Explains the business operations and description for a company symbol.
     """
-    return await explain_stock(symbol)
+    analysis = await analyze_stock(symbol)
+    return f"Analysis for {symbol}:\nHealth Score: {analysis['overall_health_score']}/100\nQuality: {analysis['quality']}\nPE Ratio: {analysis['pe_ratio']}"
 
 @mcp.tool()
 async def explain_result(symbol: str) -> str:

@@ -1,7 +1,6 @@
 import logging
 import math
 from typing import Optional
-from src.mcp_server import mcp
 from src.tools.stock import get_stock_history, get_stock_price
 
 logger = logging.getLogger("investmind.tools.technical")
@@ -9,7 +8,6 @@ logger = logging.getLogger("investmind.tools.technical")
 def _get_closes(history: list[dict]) -> list[float]:
     return [h["close"] for h in history if h.get("close") is not None]
 
-@mcp.tool()
 async def calculate_sma(symbol: str, period: int = 20) -> Optional[float]:
     """
     Calculates the Simple Moving Average (SMA) for a given period.
@@ -20,7 +18,6 @@ async def calculate_sma(symbol: str, period: int = 20) -> Optional[float]:
         return None
     return round(sum(closes[-period:]) / period, 2)
 
-@mcp.tool()
 async def calculate_ema(symbol: str, period: int = 20) -> Optional[float]:
     """
     Calculates the Exponential Moving Average (EMA) for a given period.
@@ -37,7 +34,6 @@ async def calculate_ema(symbol: str, period: int = 20) -> Optional[float]:
         ema = c * k + ema * (1 - k)
     return round(ema, 2)
 
-@mcp.tool()
 async def calculate_rsi(symbol: str) -> Optional[float]:
     """
     Calculates the 14-day Relative Strength Index (RSI).
@@ -75,7 +71,6 @@ async def calculate_rsi(symbol: str) -> Optional[float]:
     rsi = 100.0 - (100.0 / (1.0 + rs))
     return round(rsi, 2)
 
-@mcp.tool()
 async def calculate_macd(symbol: str) -> dict:
     """
     Calculates MACD (Moving Average Convergence Divergence) lines and signal line.
@@ -126,7 +121,6 @@ async def calculate_macd(symbol: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-@mcp.tool()
 async def calculate_bollinger(symbol: str) -> dict:
     """
     Calculates Bollinger Bands (Middle Band, Upper Band, Lower Band).
@@ -152,7 +146,6 @@ async def calculate_bollinger(symbol: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-@mcp.tool()
 async def calculate_atr(symbol: str, period: int = 14) -> Optional[float]:
     """
     Calculates average true range (ATR) for volatility assessment.
@@ -177,7 +170,6 @@ async def calculate_atr(symbol: str, period: int = 14) -> Optional[float]:
     # Calculate SMA of True Ranges
     return round(sum(true_ranges[-period:]) / period, 2)
 
-@mcp.tool()
 async def calculate_supertrend(symbol: str) -> dict:
     """
     Calculates Supertrend indicator trend directions.
@@ -207,7 +199,6 @@ async def calculate_supertrend(symbol: str) -> dict:
         "lower_band": round(lower_band, 2)
     }
 
-@mcp.tool()
 async def calculate_adx(symbol: str) -> Optional[float]:
     """
     Calculates average directional index (ADX) measuring trend strength.
@@ -220,7 +211,6 @@ async def calculate_adx(symbol: str) -> Optional[float]:
     adx = abs(rsi - 50.0) * 1.5 + 10.0
     return round(min(adx, 100.0), 2)
 
-@mcp.tool()
 async def calculate_support(symbol: str) -> Optional[float]:
     """
     Calculates support level (30-day swing low).
@@ -231,7 +221,6 @@ async def calculate_support(symbol: str) -> Optional[float]:
         return None
     return min(closes[-30:])
 
-@mcp.tool()
 async def calculate_resistance(symbol: str) -> Optional[float]:
     """
     Calculates resistance level (30-day swing high).
@@ -242,7 +231,6 @@ async def calculate_resistance(symbol: str) -> Optional[float]:
         return None
     return max(closes[-30:])
 
-@mcp.tool()
 async def detect_breakout(symbol: str) -> dict:
     """
     Checks if stock price broke above resistance levels.
@@ -263,7 +251,6 @@ async def detect_breakout(symbol: str) -> dict:
         "message": f"Price is above resistance level {resistance}." if triggered else "No breakout detected."
     }
 
-@mcp.tool()
 async def detect_breakdown(symbol: str) -> dict:
     """
     Checks if stock price broke below support levels.
@@ -284,7 +271,6 @@ async def detect_breakdown(symbol: str) -> dict:
         "message": f"Price is below support level {support}." if triggered else "No breakdown detected."
     }
 
-@mcp.tool()
 async def detect_volume_spike(symbol: str) -> dict:
     """
     Verifies if current market volume exceeds 2x of its 20-day SMA volume.

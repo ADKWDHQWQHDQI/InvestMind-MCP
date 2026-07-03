@@ -17,18 +17,29 @@ We treat financial data with the highest security standards. The platform is des
 
 ---
 
-## 🛠️ Exposed Tools & Modules
+## 🧠 Killer Feature: Portfolio Intelligence
 
-The server exposes **20 modules** and over **120 tools** covering every aspect of portfolio management:
+InvestMind MCP is designed for **AI-first** portfolio management. Rather than relying on rigid dashboards or complex technical tools, it exposes a high-level **Portfolio Intelligence** module that empowers ChatGPT, Claude, and other LLMs to act as your personal wealth manager.
 
-* **Authentication (`auth`):** Registration, password login, profile management.
-* **Portfolio Connection (`portfolio_conn`):** Local path-based CAS statement uploads and broker integration mocks.
-* **Portfolio Metrics (`portfolio`):** Holdings retrieval, sector/market-cap/asset allocation analysis, portfolio comparison, cash positions.
-* **Stock Fundamental Analysis (`stock`):** Real-time PE/PB ratios, debt-to-equity, return on equity (ROE), peer comparison.
-* **Technical Indicators (`technical`):** Pure-python mathematical calculations for **RSI**, **MACD**, **Bollinger Bands**, **SMA/EMA**, **ATR**, and **Support/Resistance** breakouts.
-* **Taxation (`tax`):** Indian equity tax estimator for Short-Term Capital Gains (STCG - 20%), Long-Term Capital Gains (LTCG - 10% over ₹1.25L), dividend income tax, and tax-loss harvesting guides.
-* **Watchlist & Alerts (`watchlist` / `alerts`):** Multi-watchlist management, price/volume and stop-loss alert triggers.
-* **Diagnostics (`admin`):** Server health status, latency metrics, active sessions.
+Instead of calling raw data APIs, the AI can seamlessly answer natural language questions like:
+
+* *"Why is my portfolio down today?"*
+* *"Am I overexposed to one sector?"*
+* *"Which of my holdings have negative news or technical breakdowns?"*
+* *"How much dividend income can I expect this year?"*
+* *"What are the largest risks in my portfolio right now?"*
+
+### Key AI-Native Tools Exposed:
+* `ask_portfolio(query)`
+* `why_portfolio_down()`
+* `largest_risks()`
+* `largest_opportunities()`
+* `portfolio_health()`
+* `rebalance_portfolio()`
+* `dividend_projection()`
+* `upcoming_events()`
+
+*(Under the hood, these tools automatically aggregate granular technicals like RSI, MACD, fundamental valuations, and live market data so the LLM doesn't have to piece them together manually.)*
 
 ---
 
