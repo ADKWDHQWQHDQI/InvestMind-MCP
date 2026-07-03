@@ -3,6 +3,12 @@ import base64
 import json
 import logging
 import uvicorn
+import os
+import sys
+
+# Ensure project root is in python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from fastapi import FastAPI, Request
 from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
