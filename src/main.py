@@ -12,7 +12,7 @@ from src.security.encryption import EncryptionManager
 from src.database.operations import save_portfolio, get_portfolio, save_watchlist, get_watchlist
 from src.parser.cas_parser import parse_cas_pdf
 from src.parser.normalizer import normalize_holdings
-from src.market.api import get_live_prices, get_stock_news
+from src.market.api import get_live_prices, get_stock_news, resolve_ticker, get_ticker_info
 from src.analysis.metrics import analyze_portfolio
 
 # Set up logging
@@ -62,14 +62,19 @@ async def upload_cas(
         # 3. Normalize holdings
         normalized = normalize_holdings(raw_holdings)
         
-        # 4. Encrypt holdings
+        # 4. Resolve symbols dynamically using Yahoo Finance search
+        for holding in normalized:
+            symbol = await resolve_ticker(holding["isin"])
+            holding["symbol"] = symbol
+        
+        # 5. Encrypt holdings
         passphrase = encryption_passphrase or settings.SERVER_ENCRYPTION_PASSPHRASE
         key, salt = EncryptionManager.derive_key(passphrase)
         
         holdings_json = json.dumps(normalized)
         encrypted_data = EncryptionManager.encrypt(holdings_json, key)
         
-        # 5. Save to MongoDB
+        # 6. Save to MongoDB
         success = await save_portfolio(user_id, encrypted_data, salt.hex())
         if not success:
             return {"success": False, "error": "Failed to save portfolio to database."}
@@ -114,7 +119,7 @@ async def get_portfolio_summary(user_id: str, encryption_passphrase: str = None)
     """
     Retrieves the user's decrypted holdings, fetches live market prices, and calculates 
     comprehensive portfolio metrics including total valuation, sector allocations, 
-    and concentration risks.
+    and concentration risks. All metrics and company data are queried dynamically.
     """
     try:
         holdings = await get_holdings(user_id, encryption_passphrase)
@@ -122,9 +127,14 @@ async def get_portfolio_summary(user_id: str, encryption_passphrase: str = None)
             return {"message": "No portfolio found. Please upload your CAS statement first."}
             
         symbols = [h["symbol"] for h in holdings]
-        live_prices = get_live_prices(symbols)
+        live_prices = await get_live_prices(symbols)
         
-        analysis = analyze_portfolio(holdings, live_prices)
+        # Fetch company metadata dynamically (sector, names, dividend yields)
+        ticker_infos = {}
+        for s in symbols:
+            ticker_infos[s] = await get_ticker_info(s)
+            
+        analysis = analyze_portfolio(holdings, live_prices, ticker_infos)
         return analysis
     except Exception as e:
         logger.error(f"Error in get_portfolio_summary: {e}")
@@ -134,7 +144,7 @@ async def get_portfolio_summary(user_id: str, encryption_passphrase: str = None)
 async def get_portfolio_news(user_id: str, encryption_passphrase: str = None) -> list[dict]:
     """
     Fetches the latest relevant corporate actions, dividends, and news matching the symbols 
-    in the user's portfolio.
+    in the user's portfolio dynamically.
     """
     try:
         holdings = await get_holdings(user_id, encryption_passphrase)
@@ -142,7 +152,7 @@ async def get_portfolio_news(user_id: str, encryption_passphrase: str = None) ->
             return []
             
         symbols = [h["symbol"] for h in holdings]
-        news = get_stock_news(symbols)
+        news = await get_stock_news(symbols)
         return news
     except Exception as e:
         logger.error(f"Error in get_portfolio_news: {e}")
@@ -167,7 +177,7 @@ async def get_watchlist_summary(user_id: str) -> dict:
     if not symbols:
         return {"message": "Your watchlist is empty."}
         
-    prices = get_live_prices(symbols)
+    prices = await get_live_prices(symbols)
     watchlist_items = [{"symbol": s, "price": prices.get(s)} for s in symbols]
     return {
         "user_id": user_id,

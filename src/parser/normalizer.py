@@ -1,22 +1,5 @@
 import re
 
-# Popular Indian stocks ISIN to NSE Ticker mapping
-ISIN_TO_TICKER = {
-    "INE002A01018": "RELIANCE",
-    "INE742F01042": "ADANIENT",
-    "INE154A01025": "ITC",
-    "INE090A01021": "ICICIBANK",
-    "INE040A01034": "HDFCBANK",
-    "INE009A01021": "INFY",
-    "INE467B01029": "TCS",
-    "INE205A01025": "NTPC",
-    "INE134E01011": "PFC",
-    "INE020B01018": "REC",
-    "INE302A01020": "HAL",
-    "INE263A01024": "BEL",
-    "INE155A01022": "TATAMOTORS",
-}
-
 def clean_company_name(name: str) -> str:
     """
     Removes common suffixes from company names to clean them up.
@@ -34,7 +17,7 @@ def clean_company_name(name: str) -> str:
 def normalize_holdings(raw_holdings: list[dict]) -> list[dict]:
     """
     Normalizes raw holdings into a standard schema.
-    Groups duplicate symbols and maps ISINs to clean tickers.
+    Groups duplicate holdings by ISIN.
     """
     normalized_map = {}
     
@@ -46,25 +29,16 @@ def normalize_holdings(raw_holdings: list[dict]) -> list[dict]:
         if not isin or quantity <= 0:
             continue
             
-        symbol = ISIN_TO_TICKER.get(isin)
-        if not symbol:
-            cleaned = clean_company_name(name)
-            words = cleaned.split()
-            if words:
-                symbol = "".join(words[:2])
-            else:
-                symbol = isin
-                
-        # Group duplicates (e.g. if listed multiple times)
-        if symbol in normalized_map:
-            normalized_map[symbol]["quantity"] += quantity
+        # Group duplicates by ISIN
+        if isin in normalized_map:
+            normalized_map[isin]["quantity"] += quantity
         else:
-            normalized_map[symbol] = {
-                "symbol": symbol,
+            normalized_map[isin] = {
+                "symbol": isin,  # Placeholder, resolved asynchronously during upload
                 "isin": isin,
                 "name": name,
                 "quantity": quantity,
-                "average_price": 0.0,  # Default, can be refined if statements contain purchase prices
+                "average_price": 0.0,
                 "asset_class": "Mutual Fund" if "MUTUAL FUND" in name.upper() or "MF" in name.upper() else "Equity"
             }
             

@@ -2,19 +2,19 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.main import upload_cas, get_holdings, get_portfolio_summary, get_portfolio_news, update_watchlist, get_watchlist_summary
 
-# Test base64 of standard text dummy CAS
-DUMMY_PDF_BASE64 = "JVBERi0xLjQKJVRlc3QgUERGIA=="  # %PDF-1.4 %Test PDF in base64
+DUMMY_PDF_BASE64 = "JVBERi0xLjQKJVRlc3QgUERGIA=="
 
 @pytest.mark.anyio
 @patch("src.main.parse_cas_pdf")
 @patch("src.main.save_portfolio")
-async def test_upload_cas_tool(mock_save_portfolio, mock_parse_cas_pdf):
-    # Set up mock parser output
+@patch("src.main.resolve_ticker")
+async def test_upload_cas_tool(mock_resolve_ticker, mock_save_portfolio, mock_parse_cas_pdf):
+    # Set up mock outputs
     mock_parse_cas_pdf.return_value = [
         {"isin": "INE020B01018", "name": "REC LTD", "quantity": 100.0}
     ]
-    # Set up mock DB output
     mock_save_portfolio.return_value = True
+    mock_resolve_ticker.return_value = "REC"
     
     response = await upload_cas(
         user_id="user_test_1",
@@ -28,11 +28,11 @@ async def test_upload_cas_tool(mock_save_portfolio, mock_parse_cas_pdf):
     
     mock_parse_cas_pdf.assert_called_once()
     mock_save_portfolio.assert_called_once()
+    mock_resolve_ticker.assert_called_once()
 
 @pytest.mark.anyio
 @patch("src.main.get_portfolio")
 async def test_get_holdings_tool(mock_get_portfolio):
-    # Prepare encrypted payload mock
     from src.security.encryption import EncryptionManager
     from src.config import settings
     
@@ -53,11 +53,17 @@ async def test_get_holdings_tool(mock_get_portfolio):
 @pytest.mark.anyio
 @patch("src.main.get_holdings")
 @patch("src.main.get_live_prices")
-async def test_get_portfolio_summary_tool(mock_live_prices, mock_get_holdings):
+@patch("src.main.get_ticker_info")
+async def test_get_portfolio_summary_tool(mock_ticker_info, mock_live_prices, mock_get_holdings):
     mock_get_holdings.return_value = [
         {"symbol": "REC", "isin": "INE020B01018", "name": "REC LTD", "quantity": 10.0}
     ]
     mock_live_prices.return_value = {"REC": 500.0}
+    mock_ticker_info.return_value = {
+        "sector": "Financial Services (NBFC)",
+        "dividend_yield": 0.05,
+        "name": "REC Ltd"
+    }
     
     summary = await get_portfolio_summary(user_id="user_test_1")
     
@@ -70,22 +76,28 @@ async def test_get_portfolio_summary_tool(mock_live_prices, mock_get_holdings):
 
 @pytest.mark.anyio
 @patch("src.main.get_holdings")
-async def test_get_portfolio_news_tool(mock_get_holdings):
+@patch("src.main.get_stock_news")
+async def test_get_portfolio_news_tool(mock_stock_news, mock_get_holdings):
     mock_get_holdings.return_value = [
         {"symbol": "REC", "isin": "INE020B01018", "name": "REC LTD", "quantity": 10.0}
     ]
+    mock_stock_news.return_value = [
+        {"symbol": "REC", "title": "REC Board declares an interim dividend.", "source": "Mint", "link": "", "timestamp": "2026-07-03 12:00:00"}
+    ]
     
     news = await get_portfolio_news(user_id="user_test_1")
-    assert len(news) > 0
+    assert len(news) == 1
     assert news[0]["symbol"] == "REC"
     assert "dividend" in news[0]["title"].lower()
 
 @pytest.mark.anyio
 @patch("src.main.save_watchlist")
 @patch("src.main.get_watchlist")
-async def test_watchlist_tools(mock_get_watchlist, mock_save_watchlist):
+@patch("src.main.get_live_prices")
+async def test_watchlist_tools(mock_live_prices, mock_get_watchlist, mock_save_watchlist):
     mock_save_watchlist.return_value = True
     mock_get_watchlist.return_value = ["REC", "INFY"]
+    mock_live_prices.return_value = {"REC": 500.0, "INFY": 1500.0}
     
     update_res = await update_watchlist("user_test_1", ["REC", "INFY"])
     assert update_res["success"] is True
@@ -94,4 +106,4 @@ async def test_watchlist_tools(mock_get_watchlist, mock_save_watchlist):
     assert watchlist_summary["user_id"] == "user_test_1"
     assert len(watchlist_summary["watchlist"]) == 2
     assert watchlist_summary["watchlist"][0]["symbol"] == "REC"
-    assert watchlist_summary["watchlist"][0]["price"] is not None
+    assert watchlist_summary["watchlist"][0]["price"] == 500.0

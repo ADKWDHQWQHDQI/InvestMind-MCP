@@ -12,13 +12,13 @@ def test_normalize_holdings():
     normalized = normalize_holdings(raw)
     assert len(normalized) == 2
     
-    # Check REC duplicate merged
-    rec_holding = next(h for h in normalized if h["symbol"] == "REC")
+    # Check REC duplicate merged (grouped by ISIN)
+    rec_holding = next(h for h in normalized if h["symbol"] == "INE020B01018")
     assert rec_holding["quantity"] == 150.0
     assert rec_holding["isin"] == "INE020B01018"
     
-    # Check Infosys mapped
-    infy_holding = next(h for h in normalized if h["symbol"] == "INFY")
+    # Check Infosys mapped (symbol initialized to ISIN)
+    infy_holding = next(h for h in normalized if h["symbol"] == "INE009A01021")
     assert infy_holding["quantity"] == 10.0
 
 @patch("src.parser.cas_parser.pypdf.PdfReader")
@@ -45,7 +45,6 @@ def test_parse_cas_pdf(mock_reader_cls):
 
 @patch("src.parser.cas_parser.pypdf.PdfReader")
 def test_parse_cas_pdf_wrong_password(mock_reader_cls):
-    # Set up mock reader for password failure
     mock_reader = MagicMock()
     mock_reader.is_encrypted = True
     mock_reader.decrypt.return_value = 0  # Failure
