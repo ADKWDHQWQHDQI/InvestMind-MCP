@@ -82,12 +82,17 @@ async def get_ticker_info(ticker: str) -> dict:
                 if div_yield is not None:
                     info["dividend_yield"] = float(div_yield)
                 
+                market_cap = summary_detail.get("marketCap", {}).get("value")
+                if market_cap is not None:
+                    info["market_cap"] = float(market_cap)
+                
                 # Get Long Name
                 price_module = result.get("price", {})
                 info["name"] = price_module.get("longName", "")
     except Exception as e:
         logger.error(f"Error fetching profile info for {ticker}: {e}")
     return info
+
 
 async def get_live_prices(queries: list[str]) -> dict[str, float]:
     """

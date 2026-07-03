@@ -4,9 +4,37 @@ from datetime import datetime, timedelta
 from fastapi import Request, HTTPException, status
 from src.config import settings
 
-# Thread-local / Request-local context variables for the authenticated request
+# Thread-local / Request-local context variables for the authenticated request (concurrent SSE)
 current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_id", default="")
 current_decryption_key: contextvars.ContextVar[bytes] = contextvars.ContextVar("current_decryption_key", default=b"")
+
+# Process-level session state fallback (single-user stdio CLI session)
+_session_user_id = ""
+_session_decryption_key = b""
+
+def set_stdio_session(user_id: str, key_bytes: bytes):
+    """
+    Sets the global process-level session parameters for stdio transport.
+    """
+    global _session_user_id, _session_decryption_key
+    _session_user_id = user_id
+    _session_decryption_key = key_bytes
+
+def get_authenticated_context() -> tuple[str, bytes]:
+    """
+    Retrieves the user ID and decryption key for the current request.
+    Favors Request-local contextvars, falling back to process-level stdio session state.
+    """
+    uid = current_user_id.get()
+    key = current_decryption_key.get()
+    
+    if uid and key:
+        return uid, key
+        
+    if _session_user_id and _session_decryption_key:
+        return _session_user_id, _session_decryption_key
+        
+    raise ValueError("Unauthorized or session key missing. Please authenticate using the login tool.")
 
 def create_access_token(user_id: str, derived_key_hex: str) -> str:
     """

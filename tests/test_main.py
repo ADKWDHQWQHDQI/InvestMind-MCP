@@ -4,7 +4,10 @@ import json
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
-from src.main import app, get_holdings, get_portfolio_summary, get_portfolio_news, update_watchlist, get_watchlist_summary
+from src.main import app
+from src.tools.portfolio import get_holdings, get_portfolio_summary
+from src.tools.news import get_portfolio_news
+from src.tools.watchlist import update_watchlist, get_watchlist_summary
 from src.security.auth import current_user_id, current_decryption_key, create_access_token
 from src.security.encryption import EncryptionManager
 from src.config import settings
@@ -68,7 +71,7 @@ async def test_mcp_tool_unauthorized_access():
         await get_holdings()
 
 @pytest.mark.anyio
-@patch("src.main.get_portfolio")
+@patch("src.tools.portfolio.get_portfolio")
 async def test_get_holdings_tool_authorized(mock_get_portfolio):
     """MCP tools retrieve holdings for authenticated context."""
     user_id = "user_test_1"
@@ -92,10 +95,10 @@ async def test_get_holdings_tool_authorized(mock_get_portfolio):
     assert holdings[0]["quantity"] == 100.0
 
 @pytest.mark.anyio
-@patch("src.main.get_holdings")
-@patch("src.main.get_live_prices")
-@patch("src.main.get_ticker_info")
-@patch("src.main.resolve_ticker")
+@patch("src.tools.portfolio.get_holdings")
+@patch("src.tools.portfolio.get_live_prices")
+@patch("src.tools.portfolio.get_ticker_info")
+@patch("src.tools.portfolio.resolve_ticker")
 async def test_get_portfolio_summary_tool(mock_resolve_ticker, mock_ticker_info, mock_live_prices, mock_get_holdings):
     user_id = "user_test_1"
     _, key = get_test_token(user_id)
@@ -119,9 +122,9 @@ async def test_get_portfolio_summary_tool(mock_resolve_ticker, mock_ticker_info,
     assert summary["summary"]["total_holdings_count"] == 1
 
 @pytest.mark.anyio
-@patch("src.main.get_holdings")
-@patch("src.main.get_stock_news")
-@patch("src.main.resolve_ticker")
+@patch("src.tools.news.get_holdings")
+@patch("src.tools.news.get_stock_news")
+@patch("src.tools.news.resolve_ticker")
 async def test_get_portfolio_news_tool(mock_resolve_ticker, mock_stock_news, mock_get_holdings):
     user_id = "user_test_1"
     _, key = get_test_token(user_id)

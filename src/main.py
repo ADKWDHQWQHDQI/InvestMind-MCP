@@ -11,12 +11,34 @@ from typing import Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from fastapi import FastAPI, Request, Depends, HTTPException, status, File, UploadFile, Form
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
-from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
 
 from src.config import settings
+from src.mcp_server import mcp
+
+# Import all tool modules to register them on the shared mcp server instance
+import src.tools.auth
+import src.tools.portfolio_conn
+import src.tools.portfolio
+import src.tools.stock
+import src.tools.news
+import src.tools.corp_actions
+import src.tools.earnings
+import src.tools.watchlist
+import src.tools.alerts
+import src.tools.technical
+import src.tools.ai_analysis
+import src.tools.tax
+import src.tools.market
+import src.tools.optimization
+import src.tools.search
+import src.tools.preferences
+import src.tools.admin
+import src.tools.utility
+import src.tools.ai_chat
+import src.tools.agents
+
 from src.security.auth import (
     current_user_id,
     current_decryption_key,
@@ -24,18 +46,13 @@ from src.security.auth import (
     authenticate_request
 )
 from src.security.encryption import EncryptionManager
-from src.database.operations import save_portfolio, get_portfolio, save_watchlist, get_watchlist
+from src.database.operations import save_portfolio, get_portfolio
 from src.parser.cas_parser import parse_cas_pdf
 from src.parser.normalizer import normalize_holdings
-from src.market.api import get_live_prices, get_stock_news, resolve_ticker, get_ticker_info
-from src.analysis.metrics import analyze_portfolio
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("investmind.main")
-
-# Initialize FastMCP Server
-mcp = FastMCP("InvestMind")
 
 # FastAPI Models
 class TokenRequest(BaseModel):
@@ -130,123 +147,6 @@ async def upload_cas_statement(
     except Exception as e:
         logger.error(f"Error in upload_cas_statement API: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# --- MCP TOOLS ---
-# All user_id arguments are removed. They are fetched securely from the JWT session context.
-
-@mcp.tool()
-def hello_mcp() -> str:
-    """A hello tool to verify connectivity."""
-    return "Hello Sandeep! MCP is working."
-
-@mcp.tool()
-async def get_holdings() -> list[dict]:
-    """
-    Retrieves the user's holdings from the secure MongoDB store and decrypts them in memory.
-    """
-    user_id = current_user_id.get()
-    key = current_decryption_key.get()
-    if not user_id or not key:
-        raise ValueError("Unauthorized or session key missing.")
-        
-    doc = await get_portfolio(user_id)
-    if not doc or not doc.get("encrypted_holdings"):
-        return []
-        
-    encrypted_holdings = doc["encrypted_holdings"]
-    decrypted_json = EncryptionManager.decrypt(encrypted_holdings, key)
-    return json.loads(decrypted_json)
-
-@mcp.tool()
-async def get_portfolio_summary() -> dict:
-    """
-    Retrieves the user's decrypted holdings, fetches live market prices, and calculates 
-    comprehensive portfolio metrics including valuations, sector allocations, 
-    and concentration risks.
-    """
-    user_id = current_user_id.get()
-    if not user_id:
-        raise ValueError("Unauthorized or session key missing.")
-        
-    holdings = await get_holdings()
-    if not holdings:
-        return {"message": "No portfolio found. Please upload your CAS statement first."}
-        
-    # Asynchronously resolve ISINs to Yahoo tickers first (done dynamically on-demand)
-    symbols = []
-    for h in holdings:
-        # Resolve tickers dynamically
-        symbol = await resolve_ticker(h["isin"])
-        h["symbol"] = symbol
-        symbols.append(symbol)
-        
-    live_prices = await get_live_prices(symbols)
-    
-    # Gather profile information dynamically
-    ticker_infos = {}
-    for s in symbols:
-        ticker_infos[s] = await get_ticker_info(s)
-        
-    analysis = analyze_portfolio(holdings, live_prices, ticker_infos)
-    return analysis
-
-@mcp.tool()
-async def get_portfolio_news() -> list[dict]:
-    """
-    Fetches the latest relevant corporate actions, dividends, and news matching the symbols 
-    in the user's portfolio dynamically.
-    """
-    user_id = current_user_id.get()
-    if not user_id:
-        raise ValueError("Unauthorized or session key missing.")
-        
-    holdings = await get_holdings()
-    if not holdings:
-        return []
-        
-    symbols = []
-    for h in holdings:
-        symbol = await resolve_ticker(h["isin"])
-        symbols.append(symbol)
-        
-    news = await get_stock_news(symbols)
-    return news
-
-@mcp.tool()
-async def update_watchlist(symbols: list[str]) -> dict:
-    """
-    Updates the list of stock symbols monitored in the user's watchlist.
-    """
-    user_id = current_user_id.get()
-    if not user_id:
-        raise ValueError("Unauthorized or session key missing.")
-        
-    success = await save_watchlist(user_id, symbols)
-    if success:
-        return {"success": True, "message": "Watchlist updated successfully."}
-    return {"success": False, "message": "Failed to update watchlist."}
-
-@mcp.tool()
-async def get_watchlist_summary() -> dict:
-    """
-    Retrieves the user's watchlist stock symbols along with their live prices.
-    """
-    user_id = current_user_id.get()
-    if not user_id:
-        raise ValueError("Unauthorized or session key missing.")
-        
-    symbols = await get_watchlist(user_id)
-    if not symbols:
-        return {"message": "Your watchlist is empty."}
-        
-    prices = await get_live_prices(symbols)
-    watchlist_items = [{"symbol": s, "price": prices.get(s)} for s in symbols]
-    return {
-        "user_id": user_id,
-        "watchlist": watchlist_items
-    }
-
-# --- HTTP ENDPOINTS WITH ENFORCED AUTHENTICATION ---
 
 @app.get("/sse")
 async def handle_sse(request: Request, user_id: str = Depends(authenticate_request)):
